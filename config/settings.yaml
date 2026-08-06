@@ -1,0 +1,11 @@
+# coin-recommender 설정
+# 시크릿(웹훅 URL 등)은 여기 두지 않습니다 — .env 파일을 사용하세요 (SECURITY-12)
+
+# --- Unit 1: data-pipeline ---
+db_path: "data/coin_recommender.db"
+top_n_candidates: 20
+bootstrap_min_candles: 100
+backtest_lookback_days: 180
+http_timeout_seconds: 10.0
+http_max_retries: 3
+upbit_request_delay_seconds: 0.1
