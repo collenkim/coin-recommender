@@ -9,7 +9,7 @@
 ## Execution Plan Summary
 - **Total Stages**: Application Design, Units Generation, 3x per-unit (Functional Design, NFR Requirements, NFR Design, Code Generation), Build and Test
 - **Stages to Execute**: Application Design, Units Generation, Functional Design (per unit), NFR Requirements (per unit), NFR Design (per unit), Code Generation (per unit, always), Build and Test (always)
-- **Stages to Skip**: User Stories (single personal user, no persona complexity), Infrastructure Design (no cloud infra, local single instance)
+- **Stages to Skip**: User Stories (single personal user, no persona complexity), Infrastructure Design (no cloud infra, local single instance) — **superseded 2026-08-07**: user requested Docker Compose infra for always-on VM deployment; Infrastructure Design executed for that follow-up request (see below)
 - **Units of Work**: 1) data-pipeline (upbit_client, binance_client, market_selector, data_store) 2) analytics-backtest (features, backtest, scorer) 3) api-service (api, scheduler, notifier)
 
 ## Workspace State
@@ -48,8 +48,14 @@
 ### 🟡 OPERATIONS PHASE
 - [ ] Operations (placeholder)
 
+### 🔁 Follow-up Request (2026-08-07): Docker Compose Infrastructure
+- [x] Requirements Analysis (Minimal/Standard depth — see `aidlc-docs/inception/requirements/requirements.md`)
+- [x] Infrastructure Design (see `aidlc-docs/construction/infrastructure-design/infrastructure-design.md`)
+- [x] Code Generation — `Dockerfile`, `.dockerignore`, `docker-compose.yml`, README docker section
+- [x] Verified live: `docker compose build` → `up` → container reported `(healthy)` → `GET /health` and `GET /recommendations` returned real data from the bind-mounted `./data` DB → `docker compose down`
+
 ## Current Status
-- **Lifecycle Phase**: COMPLETE
-- **Current Stage**: Build and Test approved; Operations is a placeholder with no defined steps (per core-workflow.md)
-- **Next Stage**: None — project delivered. Future work would re-enter as a new AI-DLC request (e.g. "Using AI-DLC, add X")
+- **Lifecycle Phase**: COMPLETE (base project) + Docker Compose infra follow-up delivered and approved
+- **Current Stage**: Docker Compose Code Generation approved (2026-08-07). Operations remains a placeholder with no defined steps (per core-workflow.md)
+- **Next Stage**: None — project delivered. Future work (e.g. real authenticated Upbit trading/order features) would re-enter as a new AI-DLC request (e.g. "Using AI-DLC, add X")
 - **Status**: Done

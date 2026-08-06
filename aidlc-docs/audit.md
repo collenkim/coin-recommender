@@ -415,3 +415,69 @@ Python 3.11+, IntelliJ venv 사용 예정
 **Context**: AI-DLC workflow complete for this request.
 
 ---
+
+## New Request - Workspace Detection (Resume)
+**Timestamp**: 2026-08-07T00:00:00Z
+**User Input**: "Using AI-DLC 서비스 띄우기 위한 인프라 환경은 docker-compose로 만들어줘. 그리고 업비트 open api 사용 가능한 형태인거야? 맞다면 api 키는 실행 단계에서 vm option으로 입력 받아서 처리될 수 있도록 해줘."
+**AI Response**: Existing AI-DLC project detected (aidlc-state.md status: COMPLETE). Resuming as a new follow-up request per session-continuity.md. This is a Brownfield project with no code changes needed to workspace state; proceeding to Requirements Analysis. Read src/upbit_client.py, src/config.py, src/api.py, src/scheduler.py, requirements.txt to assess current Upbit integration before drafting requirements.
+**Context**: Workspace Detection (resume) for new infra request.
+
+---
+
+## Requirements Analysis - Clarifying Questions
+**Timestamp**: 2026-08-07T00:05:00Z
+**User Input**: (see above)
+**AI Response**: Code review confirms the current Upbit integration (src/upbit_client.py) uses only pyupbit's public/unauthenticated endpoints (get_ohlcv, get_tickers) plus the public REST ticker endpoint -- no access_key/secret_key or authenticated Upbit Open API calls exist anywhere in src/. Architecture is a single FastAPI process (in-process APScheduler, SQLite file DB) with no other services. Genuine ambiguities identified before writing docker-compose: (1) intended run mode (local dev vs. always-on server) affects restart policy and container hardening, (2) SQLite persistence approach (bind mount vs named volume), (3) whether to add unused Upbit auth-key plumbing proactively since none exists in code today, (4) confirming "VM option" maps to container runtime environment variables (Docker has no JVM-style -D flags). Created requirement-verification-questions.md and stopped for answers per requirements-analysis.md Step 6 gate.
+**Context**: Requirements Analysis (Minimal-Standard depth) for docker-compose infra request.
+
+---
+
+## Requirements Analysis - Answers Received
+**Timestamp**: 2026-08-07T00:10:00Z
+**User Input**: "완료 했어." (answers filled into requirement-verification-questions.md: Q1=A 서버(VM)에서 상시 운영, Q2=A 호스트 ./data 바인드 마운트, Q3=A 현재 그대로 유지(인증 키 추가 안 함), Q4=B IntelliJ 실행 설정(로컬 비-컨테이너 실행 시))
+**AI Response**: Read answers. Q1/Q3 resolve the two real forks: always-on VM deployment (not throwaway dev), and no Upbit auth-key plumbing since it's unused in code today. Q4's "IntelliJ Run Configuration" answer applies to non-container local runs only (pydantic-settings already reads process env vars there with priority over .env, no code change needed) -- it does not apply to the docker-compose path, where existing secrets (Telegram/Discord) still need runtime injection; used the project's existing `.env` convention (env_file) for that, consistent with Q4's spirit of "not baked into anything at build/commit time." No further contradictions found. Generated requirements.md (Step 7) and infrastructure-design.md (mapping: single container, bind-mount storage, no messaging/networking/monitoring stack beyond the existing GET /health reused as Docker healthcheck).
+**Context**: Requirements Analysis Step 7 + Infrastructure Design, docker-compose follow-up request.
+
+---
+
+## Code Generation - Docker Compose Infra
+**Timestamp**: 2026-08-07T00:20:00Z
+**User Input**: (proceeding directly per already-answered requirements; no separate plan-approval round-trip requested)
+**AI Response**: Generated Dockerfile (python:3.12-slim, pinned tag per SECURITY baseline, non-root `app` user, COPY src+config only), .dockerignore (excludes venv/.git/.idea/data/.env/tests/aidlc-docs from build context), docker-compose.yml (single `api` service, `env_file: .env`, bind mount `./data:/app/data`, `healthcheck` against existing GET /health, `restart: unless-stopped` per Q1), and a README "Docker로 실행" section. Verified live end-to-end: `docker compose config` validated, `docker compose build` succeeded, `docker compose up -d` reported the container `(healthy)`, `curl :8000/health` returned `{"status":"ok","db_connected":true}`, `curl :8000/recommendations` correctly read pre-existing data from the bind-mounted ./data DB, then `docker compose down` cleaned up. No Upbit access_key/secret_key added anywhere, confirming the answer to the user's original question: the app currently only uses Upbit's public API, so no key injection was needed.
+**Files Generated**: Dockerfile, .dockerignore, docker-compose.yml
+**Files Modified**: README.md (added Docker section)
+**Context**: Code Generation for Docker Compose infra follow-up request.
+
+---
+
+## Code Generation - Approval / Docker Compose Infra Complete
+**Timestamp**: 2026-08-07T00:25:00Z
+**User Input**: "ntinue to Next Stage" (Continue to Next Stage)
+**AI Response**: Approval recorded. Docker Compose infra follow-up request marked complete. Operations remains a placeholder per core-workflow.md.
+**Context**: AI-DLC docker-compose follow-up request complete.
+
+---
+
+## Code Generation - Request Changes
+**Timestamp**: 2026-08-07T00:26:00Z
+**User Input**: "Request Changes"
+**AI Response**: Request received without specifics. Asking user which part of the Docker Compose deliverable to change before modifying anything, rather than guessing.
+**Context**: Docker Compose infra follow-up request — awaiting change details.
+
+---
+
+## Architecture Confirmation - Upbit/Binance Key Requirements
+**Timestamp**: 2026-08-07T00:35:00Z
+**User Input**: "업비트 API를 사용하려면 키가 필요한거잖아? 키를 전달하는 방법은 intellij 설정을 통해 전달하게 할꺼고, 그걸 받아서 처리하는 구조로 되어 있는지 확인해주고, 바이낸스 비트코인, 이더리움 정보도 참고할 수 있도록 한다고 했는데 그렇게 동작하는 구조인건지. 바이낸스 참조하려면 별도로 필요한게 있는지도 검토해줘."
+**AI Response**: Investigated src/pipeline.py, src/upbit_client.py, src/binance_client.py, src/config.py. Corrected premise: Upbit's public market-data endpoints (candles, tickers) -- the only ones this app calls -- do not require access_key/secret_key at all; Upbit only requires keys for authenticated endpoints (orders, account balance), which this app never calls. Confirmed no structure exists to receive/process an Upbit key today: UpbitClient.__init__ takes no key params, Settings (src/config.py) has no upbit_access_key/upbit_secret_key field, so an IntelliJ env var of that name would currently be silently ignored (extra="ignore"). Confirmed Binance BTC/ETH regime reference is implemented and working: BinanceClient.get_klines (src/binance_client.py) calls the public /api/v3/klines endpoint, invoked from pipeline.py's run_recommendation_pipeline for BTC_MARKET/ETH_MARKET -- no API key needed for this endpoint either, already live-verified in the original Build and Test phase. No code changes made -- this was a confirmation/explanation request.
+**Context**: Resolves the "Request Changes" -> "업비트 API 키 관련 결정 재검토" thread with factual clarification rather than adding unused key plumbing.
+
+---
+
+## Code Generation - Approval / Docker Compose Infra Complete
+**Timestamp**: 2026-08-07T00:40:00Z
+**User Input**: "구조에 대한 확인 목적이야."
+**AI Response**: Confirmed the "Request Changes" was purely a request to verify Upbit/Binance key architecture, not a change to the Docker Compose deliverable. No code changes needed -- Dockerfile, .dockerignore, docker-compose.yml, and README stand as generated and previously verified live (build/up/healthcheck/curl/down). Docker Compose infra follow-up request marked complete.
+**Context**: AI-DLC docker-compose follow-up request complete.
+
+---

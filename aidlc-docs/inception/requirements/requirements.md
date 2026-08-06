@@ -1,118 +1,43 @@
-# Requirements — coin-recommender
+# Requirements — Docker Compose 인프라 + 업비트 Open API 사용 여부 확인
 
 ## Intent Analysis Summary
+- **User Request**: "Using AI-DLC 서비스 띄우기 위한 인프라 환경은 docker-compose로 만들어줘. 그리고 업비트 open api 사용 가능한 형태인거야? 맞다면 api 키는 실행 단계에서 vm option으로 입력 받아서 처리될 수 있도록 해줘."
+- **Request Type**: Enhancement (infra addition to an already-delivered project) + clarification question about existing integration
+- **Scope Estimate**: Single component (deployment/infra for the existing single-process FastAPI app) — no new business logic, no new units
+- **Complexity Estimate**: Simple — one service, no external dependencies (DB is SQLite, no message queue/cache/second service)
+- **Depth Applied**: Minimal/Standard (per requirements-analysis.md Step 3) — clear request, but with one genuine ambiguity (whether to add unused Upbit auth-key plumbing) requiring clarification before implementation
 
-- **User Request**: FastAPI 기반 알트코인 추천 서비스. 업비트 1h/4h 캔들에 일목균형표(구름대) 전략을 적용해, 하루 안에 +4% 상승 가능성이 높은 알트코인을 과거 실제 수익률 기반 기대수익률로 추천.
-- **Request Type**: New Project (Greenfield)
-- **Scope Estimate**: System-wide — 외부 API 연동(업비트, 바이낸스) + 데이터 저장(SQLite) + 통계 계산(백테스트) + 스케줄링 + REST API + 외부 알림(웹훅)이 모두 결합된 단일 서비스
-- **Complexity Estimate**: Moderate — 각 구성요소 자체는 단순하지만, 시그널 상태 정의·백테스트 표본 확보·레짐 필터 등 도메인 로직에 여러 설계 결정이 필요했음 (Requirements Analysis 중 2라운드에 걸쳐 해소)
-- **Depth Applied**: Standard
+## Code Investigation Findings
+`src/upbit_client.py` uses only `pyupbit`'s public/unauthenticated surface:
+- `pyupbit.get_ohlcv(...)` — public candle data
+- `pyupbit.get_tickers(fiat="KRW")` + public `GET https://api.upbit.com/v1/ticker` — public ticker data
+
+No `access_key`/`secret_key`, no authenticated Upbit Open API calls (orders, account balance, etc.) exist anywhere in `src/`. `src/config.py` has no Upbit-related settings at all today — only `telegram_bot_token`, `telegram_chat_id`, `discord_webhook_url` are secrets, sourced from `.env` (gitignored) and never from `config/settings.yaml`.
+
+**Answer to the user's question**: The current codebase is *not* in a form that uses the authenticated Upbit Open API — it only calls Upbit's public market-data endpoints, which require no API key.
+
+## Clarifying Answers (from requirement-verification-questions.md)
+| # | Question | Answer |
+|---|---|---|
+| 1 | docker-compose 목적 | 서버(VM)에서 상시 운영 (프로덕션 관례 적용). 배포 자동화(CI/CD)는 불필요 — 수동 이미지 빌드 후 `docker-compose up`. |
+| 2 | SQLite 영속성 | 호스트 `./data` 디렉토리 바인드 마운트 (기존 `db_path` 설정 그대로) |
+| 3 | 업비트 인증 키 처리 | 현재 코드가 인증 API를 쓰지 않으므로 추가 작업 없이 그대로 둔다— 미사용 설정을 미리 만들지 않음 |
+| 4 | "VM option" 구현 방식 | 다른 방식 희망: 로컬(비-컨테이너) 실행 시에는 IntelliJ Run Configuration의 환경 변수로 입력 |
 
 ## Functional Requirements
+- FR-I1: `docker-compose.yml`로 기존 FastAPI 앱(`uvicorn src.api:app`, in-process APScheduler 포함)을 컨테이너 하나로 띄울 수 있어야 한다.
+- FR-I2: SQLite DB 파일이 컨테이너 재생성 후에도 유지되어야 한다 (호스트 `./data` 바인드 마운트).
+- FR-I3: 기존 시크릿(`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL`)은 이미지에 포함되지 않고, 실행 시점에 `.env` 파일(커밋 안 됨, 기존 관례 그대로)을 통해 컨테이너에 주입되어야 한다.
+- FR-I4: 업비트 API 키 관련 코드/설정은 추가하지 않는다 (현재 미사용, Q3 답변에 따름).
 
-### FR1. 후보군 선정
-- 업비트 KRW 마켓 기준, 24시간 거래대금 상위 20개 알트코인 (BTC/ETH 제외)
-- 매 실행마다 후보군을 새로 조회 (고정 리스트 아님)
+## Non-Functional Requirements (Infra)
+- NFR-I1 (Security, SECURITY-12 연장): 시크릿은 이미지 레이어에 절대 포함되지 않는다 — `.dockerignore`로 `.env` 제외, `env_file`/환경변수로만 주입.
+- NFR-I2 (Security): Dockerfile은 pinned base image tag 사용 (`latest` 금지, 기존 SECURITY 규칙과 동일).
+- NFR-I3 (Security): 컨테이너는 non-root 사용자로 실행.
+- NFR-I4 (Resiliency, RESILIENCY-06 연장): docker-compose의 `healthcheck`가 기존 `GET /health` 엔드포인트를 사용해 컨테이너 상태를 반영한다.
+- NFR-I5 (Operability, Q1 답변 반영): 상시 운영 목적이므로 `restart: unless-stopped` 적용.
 
-### FR2. 데이터 수집
-- **업비트**: pyupbit로 후보 20개 코인의 1시간봉/4시간봉 OHLCV 수집
-- **바이낸스**: `/api/v3/klines` (공개, 인증 불필요)로 BTC/ETH 4시간봉 수집 — 시장 레짐 참고용
-
-### FR3. 부트스트랩 및 증분 수집
-- 최초 실행 시 (market, timeframe) 조합마다 최소 100봉 수집 (일목균형표 스팬B(52) + 26기간 선행이동 고려)
-- **백테스트 전용 이력**: 지표 계산용 100봉과 별도로, 기대수익률 통계 표본 확보를 위해 초기 1회에 한해 더 긴 과거 이력을 추가 수집한다. 기본값은 `config/settings.yaml`의 `backtest_lookback_days`로 설정 가능하며 기본값은 180일로 한다 (별도 지정 없었으므로 구현 시 합리적 기본값으로 채택, 언제든 설정 변경 가능)
-- 이후 매 실행마다 (market, timeframe)별 마지막 저장 캔들 시각 이후분만 증분 수집
-
-### FR4. 저장
-- SQLite. 업비트 캔들 테이블과 바이낸스 참고 캔들 테이블을 분리
-- Unique key: (market, timeframe, candle_time) — upsert
-
-### FR5. 일목균형표 계산
-- pandas-ta 기반, 1시간봉/4시간봉 각각에 대해 전환선/기준선/선행스팬A/B/후행스팬 계산
-
-### FR6. 추세 필터 (4시간봉)
-- 종가가 구름대(스팬A/B) 위에 있고, 양운(스팬A > 스팬B)인 경우만 추세 조건 충족
-
-### FR7. 진입 시그널 (1시간봉)
-- 전환선이 기준선을 상향 돌파(골든크로스)하는 시점
-
-### FR8. 시장 레짐 필터 (하드 필터)
-- 바이낸스 BTC/ETH 4시간봉 구름대가 "위 + 양운" 조건을 만족하지 못하면(하락/약세 레짐), 해당 실행 회차에서는 알트코인 추천 자체를 생성하지 않는다 (점수 감점이 아닌 완전 스킵)
-- 이 레짐 조건은 시그널 상태 정의에는 포함하지 않는다 (별도의 실행 게이트)
-
-### FR9. 시그널 상태 정의 및 기대수익률 계산
-- 시그널 상태 = (4시간봉 추세 필터 통과 여부 + 구름 색) × (1시간봉 골든크로스 발생 여부)의 조합으로 정의되는 이산 상태
-- 표본은 **코인별로 개별 집계** (다른 코인과 풀링하지 않음)
-- 기대수익률 = 해당 코인에서 동일 시그널 상태가 과거에 발생했던 시점들의 실제 24시간 후 수익률 평균
-- 결과에는 항상 표본 수 N과, N 중 실제 24시간 수익률이 +4% 이상이었던 횟수("적중")를 함께 표시 (예: "기대수익률 5.1% (과거 3회 중 2회 적중)")
-- **N=0인 경우**: 해당 코인은 이번 회차 추천 대상에서 제외한다 (표본이 없으면 기대수익률을 계산할 수 없으므로, 4% 기준 충족 여부를 판단할 수 없음 → 미달과 동일하게 취급)
-
-### FR10. 추천 필터링
-- 기대수익률이 4% 이상인 코인만 최종 추천 리스트에 포함
-- 미달 코인은 제외되며, 모든 후보가 미달이면 추천 리스트가 0개일 수 있음 (정상 동작)
-
-### FR11. API
-- `GET /recommendations`: 가장 최근 1회 실행의 추천 리스트 반환 (이력 조회 기능 없음)
-- `POST /run`: 수동으로 추천 로직 1회 트리거
-
-### FR12. 스케줄링
-- APScheduler를 FastAPI 프로세스 내(in-process)에서 실행, `lifespan`에서 시작/종료
-- 매시 정각 이후 약 5분 지연을 두고 1시간마다 1회 자동 실행 (1시간봉 캔들 마감 반영 대기)
-
-### FR13. 알림
-- 텔레그램/디스코드 웹훅으로 `requests.post()` 직접 호출
-- 매 스케줄 실행 후 항상 전송 — 추천이 0개인 경우에도 "이번 회차 추천 없음" 메시지를 전송
-
-### FR14. 인증
-- 인증 없음. 로컬/개인 사용 전용으로, 외부 인터넷에 노출하지 않는 것을 전제로 한다 (Security Baseline SECURITY-08 예외 — 아래 NFR 참조)
-
-## Non-Functional Requirements
-
-### 보안 (Security Baseline — 적용, SECURITY-08 예외)
-- **SECURITY-08 (인증)**: N/A — 로컬 개인 사용, 외부 미노출을 전제로 명시적 예외 처리
-- **SECURITY-01 (저장 암호화)**: N/A — 로컬 SQLite 파일, 클라우드 관리형 스토어 아님
-- **SECURITY-02/04/06/07 (LB/CDN 로깅, HTML 보안 헤더, IAM, 네트워크 방화벽)**: N/A — 해당 인프라 구성요소 없음 (JSON API, 클라우드 미배포)
-- **SECURITY-03 (애플리케이션 로깅)**: 적용 — 표준 `logging` 모듈로 구조화 로그, 타임스탬프/레벨/메시지 포함, 시크릿(웹훅 URL 등) 로그 미노출
-- **SECURITY-05 (입력 검증)**: 적용 — FastAPI/pydantic 스키마로 모든 API 파라미터 검증
-- **SECURITY-09 (하드닝)**: 적용 — 프로덕션 에러 응답에 스택트레이스/내부 경로 미노출
-- **SECURITY-10 (공급망)**: 적용 — `requirements.txt`에 버전 고정
-- **SECURITY-11 (보안 설계)**: 부분 적용 — 레이트리밋은 N/A(비공개, 미노출 API)로 문서화, 그 외 방어적 설계 원칙 적용
-- **SECURITY-12 (자격증명 관리)**: 적용 — 텔레그램/디스코드 웹훅 URL 등은 환경변수/`.env`로 관리, 코드에 하드코딩 금지
-- **SECURITY-13 (무결성 검증)**: N/A — 신뢰된 거래소 공개 API 응답만 역직렬화, CDN/서명 검증 대상 없음
-- **SECURITY-14 (보안 알림/모니터링)**: N/A — 클라우드 알림 인프라 없음, 기본 로깅으로 대체
-- **SECURITY-15 (예외 처리)**: 적용 — 모든 외부 호출(DB, 업비트, 바이낸스, 웹훅)에 명시적 예외 처리, 전역 예외 핸들러, 실패 시 안전하게 종료(fail closed)
-
-### 복원력 (Resiliency Baseline — 코드 레벨만 적용)
-- **RESILIENCY-01/02/03/04/07/08/09/11/12/13/14/15 (워크로드 분류, RTO/RPO, 변경관리, CI/CD, 리전 토폴로지, 오토스케일링, DR, 카오스 테스트, 장애대응 프로세스 등)**: N/A — 로컬 단일 인스턴스, 클라우드 미배포
-- **RESILIENCY-05 (관측성)**: 부분 적용 — 구조화 로깅만 (메트릭/분산추적 인프라는 N/A)
-- **RESILIENCY-06 (헬스체크)**: 적용 — `GET /health` 엔드포인트로 프로세스 및 DB 연결 상태 확인
-- **RESILIENCY-10 (의존성 격리)**: 적용 — 업비트/바이낸스/웹훅 등 모든 외부 호출에 명시적 타임아웃 설정, 일시적 실패 시 재시도/백오프, 일부 코인 데이터 수집 실패 시에도 나머지는 계속 처리(graceful degradation), 웹훅 전송 실패가 추천 로직 자체를 막지 않도록 격리
-
-### 테스트 (Property-Based Testing — 부분 적용: PBT-02, 03, 07, 08, 09)
-- **PBT-09 (프레임워크)**: Hypothesis 채택, `requirements.txt`에 포함
-- **PBT-02 (라운드트립)**: SQLite upsert 후 조회 시 저장한 캔들 데이터가 동일하게 복원되는지 검증
-- **PBT-03 (불변식)**: 일목균형표 계산 함수의 불변식 검증 (예: 출력 길이, 구름 색 판정이 스팬A/B 비교와 항상 일관되는지, 워밍업 구간 처리)
-- **PBT-07 (생성기 품질)**: OHLCV 캔들용 도메인 생성기(양수 가격, 시간 순서 보장 등) 사용, 원시 타입만 사용한 생성기 금지
-- **PBT-08 (셔링킹/재현성)**: Hypothesis 기본 셔링킹 활성 유지, 실패 시 시드 로깅
-- 그 외 PBT 규칙(01, 04, 05, 06, 10)은 권고 수준(advisory), blocking 아님
-
-## Key Design Decisions (Requirements Analysis에서 확정)
-
-| 항목 | 결정 |
-|---|---|
-| BTC/ETH 레짐 처리 | 하드 필터 — 하락 시 해당 회차 추천 자체를 생성하지 않음 (규칙기반 점수 감점 아님) |
-| 백테스트 이력 | 지표용 100봉과 별도로 초기 1회 장기 이력(기본 180일, 설정 가능) 추가 수집 |
-| 시그널 상태 표본 범위 | 코인별 개별 집계 (풀링 없음) |
-| 알림 발송 조건 | 매 실행마다 항상 전송 (0개여도 전송) |
-| 스케줄 주기 | 매시 정각 후 약 5분 지연, 1시간마다 1회 |
-| /recommendations 범위 | 최신 1회 실행 결과만 (이력 조회 없음) |
-| 인증 | 없음 (로컬/개인용) |
-| Security Baseline | 적용, SECURITY-08(인증)만 예외 |
-| Resiliency Baseline | 코드 레벨만 적용 (타임아웃/재시도/헬스체크), 클라우드 인프라 항목은 N/A |
-| Property-Based Testing | 부분 적용 (PBT-02/03/07/08/09) |
-| N=0 표본 처리 | 해당 코인은 이번 회차 추천에서 제외 (스펙의 "미달 시 제외" 원칙과 동일하게 취급, 명시적 답변은 없었으나 논리적으로 유일하게 일관된 해석) |
-
-## Assumptions (명시적으로 질문하지 않고 합리적으로 결정한 항목)
-
-- `backtest_lookback_days` 기본값 180일 — 스펙 예시("6개월~1년")의 하한을 기본값으로 채택, 설정 파일로 언제든 조정 가능
-- "적중"의 정의 = 과거 해당 시그널 발생 사례에서 실제 24시간 수익률이 +4% 이상이었던 경우 (스펙의 목표 임계값과 동일 기준 적용)
+## Out of Scope (explicit, per Q3/Q4 answers)
+- Upbit 인증 API 키(`access_key`/`secret_key`) 설정 추가 — 코드에서 사용하지 않으므로 만들지 않음.
+- CI/CD 파이프라인, 멀티 스테이지 배포 자동화 — Q1 답변에서 명시적으로 불필요.
+- 클라우드/오케스트레이션(K8s 등), 로드밸런서, 메시징 인프라 — 기존 NFR Design 결정("no cloud infra, local single instance")과 동일하게 해당 없음, 단일 컨테이너로 충분.

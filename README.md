@@ -38,6 +38,17 @@ uvicorn src.api:app --reload
 - `POST /run` — 수동 실행
 - `GET /health` — 헬스체크
 
+## Docker로 실행 (서버 상시 운영용)
+
+```bash
+cp .env.example .env   # 아직 안 했다면; 텔레그램/디스코드 시크릿 채우기
+docker-compose up -d --build
+```
+
+- SQLite DB는 호스트 `./data`에 바인드 마운트되어 컨테이너를 재생성해도 유지됩니다.
+- `.env`는 이미지에 포함되지 않고 `docker-compose up` 실행 시점에 컨테이너 환경변수로 주입됩니다 (커밋 금지).
+- 현재 업비트 연동은 `pyupbit`의 공개(인증 불필요) 캔들/티커 조회만 사용하므로 업비트 API 키는 필요/사용하지 않습니다.
+
 ## 테스트
 
 ```bash
