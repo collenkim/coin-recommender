@@ -49,6 +49,19 @@ docker-compose up -d --build
 - `.env`는 이미지에 포함되지 않고 `docker-compose up` 실행 시점에 컨테이너 환경변수로 주입됩니다 (커밋 금지).
 - 현재 업비트 연동은 `pyupbit`의 공개(인증 불필요) 캔들/티커 조회만 사용하므로 업비트 API 키는 필요/사용하지 않습니다.
 
+### 실행 확인 (스모크 테스트)
+
+컨테이너가 실제로 정상 동작하는지 확인하는 방법입니다 (아래 `## 테스트`의 `pytest`와는 별개 — pytest는 Docker 없이 로컬에서 코드 자체를 검증하고, 여기는 8000 포트로 뜬 실제 컨테이너를 확인합니다).
+
+```bash
+docker-compose ps                              # STATUS 컬럼에 (healthy) 나오는지 확인
+curl http://localhost:8000/health               # {"status":"ok","db_connected":true} 기대
+curl http://localhost:8000/recommendations      # 최신 추천 결과 (아직 한 번도 안 돌았으면 recommendations: [])
+curl http://localhost:8000/recommendations?limit=3   # 최근 3회차 이력까지 조회
+curl -X POST http://localhost:8000/run           # 수동으로 파이프라인 즉시 실행 (실제 업비트/바이낸스 호출, 몇 분 걸릴 수 있음)
+docker-compose logs -f                           # 실시간 로그로 스케줄러/에러 확인
+```
+
 ## 테스트
 
 ```bash

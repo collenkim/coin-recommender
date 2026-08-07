@@ -45,6 +45,9 @@ class RecommendationRecord:
     expected_return: float
     n: int
     hit_count: int
+    target_reached: bool | None = None
+    realized_return: float | None = None
+    evaluated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -68,9 +71,38 @@ CREATE TABLE IF NOT EXISTS recommendations (
     expected_return REAL NOT NULL,
     n INTEGER NOT NULL,
     hit_count INTEGER NOT NULL,
+    target_reached INTEGER,
+    realized_return REAL,
+    evaluated_at TEXT,
     PRIMARY KEY (run_time, market)
 );
 """
+
+# Migration for DBs created before outcome tracking existed (NFR-L3) -- CREATE TABLE IF NOT EXISTS
+# above only covers fresh DBs, so already-deployed `recommendations` tables need these added explicitly.
+_RECOMMENDATIONS_OUTCOME_COLUMNS = [
+    ("target_reached", "INTEGER"),
+    ("realized_return", "REAL"),
+    ("evaluated_at", "TEXT"),
+]
+
+
+_RECOMMENDATIONS_SELECT = (
+    "SELECT market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at FROM recommendations"
+)
+
+
+def _row_to_recommendation_record(row) -> RecommendationRecord:
+    market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at = row
+    return RecommendationRecord(
+        market=market,
+        expected_return=expected_return,
+        n=n,
+        hit_count=hit_count,
+        target_reached=None if target_reached is None else bool(target_reached),
+        realized_return=realized_return,
+        evaluated_at=None if evaluated_at is None else datetime.fromisoformat(evaluated_at),
+    )
 
 
 class DataStore:
@@ -102,6 +134,12 @@ class DataStore:
                 conn.execute(_SCHEMA.format(table=table))
             conn.execute(_RUNS_SCHEMA)
             conn.execute(_RECOMMENDATIONS_SCHEMA)
+            for column, col_type in _RECOMMENDATIONS_OUTCOME_COLUMNS:
+                try:
+                    conn.execute(f"ALTER TABLE recommendations ADD COLUMN {column} {col_type}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc):
+                        raise
 
     def upsert_candles(self, source: Source, market: str, timeframe: str, candles: list[Candle]) -> int:
         if not candles:
@@ -203,15 +241,64 @@ class DataStore:
                 return None
             run_time_str, regime_bullish = row
             rec_rows = conn.execute(
-                "SELECT market, expected_return, n, hit_count FROM recommendations WHERE run_time = ? ORDER BY expected_return DESC",
+                f"{_RECOMMENDATIONS_SELECT} WHERE run_time = ? ORDER BY expected_return DESC",
                 (run_time_str,),
             ).fetchall()
-        recommendations = [RecommendationRecord(market=r[0], expected_return=r[1], n=r[2], hit_count=r[3]) for r in rec_rows]
         return PipelineRunResult(
             run_time=datetime.fromisoformat(run_time_str),
             regime_bullish=bool(regime_bullish),
-            recommendations=recommendations,
+            recommendations=[_row_to_recommendation_record(r) for r in rec_rows],
         )
+
+    def get_recent_runs(self, limit: int) -> list[PipelineRunResult]:
+        """BR10: most recent `limit` runs (newest first), each with its own recommendations."""
+        with self._connect() as conn:
+            run_rows = conn.execute(
+                "SELECT run_time, regime_bullish FROM pipeline_runs ORDER BY run_time DESC LIMIT ?", (limit,)
+            ).fetchall()
+            runs = []
+            for run_time_str, regime_bullish in run_rows:
+                rec_rows = conn.execute(
+                    f"{_RECOMMENDATIONS_SELECT} WHERE run_time = ? ORDER BY expected_return DESC",
+                    (run_time_str,),
+                ).fetchall()
+                runs.append(
+                    PipelineRunResult(
+                        run_time=datetime.fromisoformat(run_time_str),
+                        regime_bullish=bool(regime_bullish),
+                        recommendations=[_row_to_recommendation_record(r) for r in rec_rows],
+                    )
+                )
+        return runs
+
+    def get_pending_evaluations(self, older_than: datetime) -> list[tuple[str, datetime]]:
+        """BR12: (market, run_time) pairs not yet evaluated, whose 24h window has already closed."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT market, run_time FROM recommendations WHERE evaluated_at IS NULL AND run_time <= ?",
+                (older_than.isoformat(),),
+            ).fetchall()
+        return [(market, datetime.fromisoformat(run_time_str)) for market, run_time_str in rows]
+
+    def record_outcome(self, outcome) -> None:
+        """BR9/BR11: persists a RecommendationOutcome onto its recommendation row.
+        `outcome` just needs .market/.run_time/.target_reached/.realized_return/.evaluated_at (duck-typed,
+        avoids importing backtest.RecommendationOutcome -- same pattern as save_run)."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE recommendations
+                SET target_reached = ?, realized_return = ?, evaluated_at = ?
+                WHERE run_time = ? AND market = ?
+                """,
+                (
+                    int(outcome.target_reached),
+                    outcome.realized_return,
+                    outcome.evaluated_at.isoformat(),
+                    outcome.run_time.isoformat(),
+                    outcome.market,
+                ),
+            )
 
     def ping(self) -> bool:
         """RESILIENCY-06: basic DB connectivity check for the health endpoint."""

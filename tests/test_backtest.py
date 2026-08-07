@@ -3,7 +3,8 @@ from datetime import datetime, timedelta, timezone
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from src.backtest import aggregate_stats, compute_signal_stats, golden_cross_event
+from src.backtest import aggregate_stats, compute_signal_stats, evaluate_outcome, golden_cross_event
+from src.data_store import Candle
 from src.features import IchimokuPoint
 
 UTC = timezone.utc
@@ -18,6 +19,19 @@ def point(hour, close=100.0, tenkan=None, kijun=None, senkou_a=None, senkou_b=No
         kijun=kijun,
         senkou_a=senkou_a,
         senkou_b=senkou_b,
+    )
+
+
+def candle(hour, close=100.0, high=None) -> Candle:
+    return Candle(
+        market="KRW-XRP",
+        timeframe="1h",
+        candle_time=T0 + timedelta(hours=hour),
+        open=close,
+        high=high if high is not None else close,
+        low=close,
+        close=close,
+        volume=1.0,
     )
 
 
@@ -134,3 +148,49 @@ def test_aggregate_stats_empty_samples_yields_none_expected_return():
 def test_pbt_expected_return_is_mean_of_samples(samples):
     stats = aggregate_stats("KRW-XRP", samples)
     assert abs(stats.expected_return - (sum(samples) / len(samples))) < 1e-9
+
+
+# --- evaluate_outcome (BR11) ---
+
+def test_evaluate_outcome_target_reached_via_intra_window_high():
+    run_time = T0 + timedelta(hours=10)
+    candles = [candle(h, close=100.0) for h in range(0, 10)]
+    candles.append(candle(10, close=100.0))  # entry candle, close=100
+    window = [candle(h, close=100.0) for h in range(11, 34)]  # 23 candles, no move
+    window.append(candle(34, close=100.0, high=105.0))  # 24th candle: high touches +5%, close flat
+    candles += window
+    now = T0 + timedelta(hours=100)
+
+    outcome = evaluate_outcome("KRW-XRP", run_time, candles, now)
+
+    assert outcome is not None
+    assert outcome.target_reached is True  # high-based (Q1=B), even though close-based realized_return is ~0
+    assert abs(outcome.realized_return - 0.0) < 1e-9
+    assert outcome.evaluated_at == now
+
+
+def test_evaluate_outcome_target_not_reached():
+    run_time = T0 + timedelta(hours=10)
+    candles = [candle(h, close=100.0) for h in range(0, 11)]
+    candles += [candle(h, close=101.0, high=102.0) for h in range(11, 35)]  # +2% high, never hits +4%
+    now = T0 + timedelta(hours=100)
+
+    outcome = evaluate_outcome("KRW-XRP", run_time, candles, now)
+
+    assert outcome is not None
+    assert outcome.target_reached is False
+    assert abs(outcome.realized_return - 0.01) < 1e-9
+
+
+def test_evaluate_outcome_none_when_no_entry_candle_found():
+    run_time = T0 - timedelta(hours=1)  # before any stored candle
+    candles = [candle(h) for h in range(0, 30)]
+
+    assert evaluate_outcome("KRW-XRP", run_time, candles, T0 + timedelta(hours=100)) is None
+
+
+def test_evaluate_outcome_none_when_window_incomplete():
+    run_time = T0 + timedelta(hours=10)
+    candles = [candle(h) for h in range(0, 11)] + [candle(h) for h in range(11, 20)]  # only 9 bars after entry
+
+    assert evaluate_outcome("KRW-XRP", run_time, candles, T0 + timedelta(hours=100)) is None

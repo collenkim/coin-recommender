@@ -1,49 +1,64 @@
-# Requirements Clarification Questions — Docker Compose 인프라 + 업비트 API 키 처리
+# Requirements Clarification Questions — 추천 결과 적중 판별 및 학습 반영
 
-코드를 확인한 결과를 먼저 공유합니다: 현재 `src/upbit_client.py`는 `pyupbit`의 **공개(인증 불필요) 엔드포인트**만 사용합니다 (`get_ohlcv`, `get_tickers`, 공개 ticker REST). `access_key`/`secret_key` 기반 인증 Open API(주문 등)는 코드 어디에서도 사용하지 않습니다. 이 점을 감안해 아래 질문에 답해주세요.
+현재 로직을 확인한 결과를 먼저 공유합니다: 지금 `expected_return`/`n`/`hit_count`는 **순전히 과거 데이터 기반 회고적 계산**입니다 (`src/backtest.py`의 `compute_signal_stats`) — 추천 시점에 그 코인의 과거 캔들 히스토리에서 "같은 시그널이 떴던 과거 시점들"을 찾아, 그때의 실제 24시간 후 수익률을 평균낸 것입니다. 추천을 저장한 뒤 "이 추천이 실제로 적중했는지"를 나중에 다시 확인하는 로직은 전혀 없습니다 (`recommendations` 테이블에 추천만 쓰고 끝).
+
+아래 질문들이 구현 방향을 가르는 지점입니다.
 
 ## Question 1
-docker-compose는 어떤 목적으로 사용하실 예정인가요? (재시작 정책, 컨테이너 보안 설정 등에 영향)
+"예측 도달 %에 부합했는지"를 판별하는 기준은 무엇인가요?
 
-A) 로컬 개발/테스트용 (필요할 때 띄우고 내리는 용도)
+A) 추천 시점 종가 대비 정확히 24시간 후 종가로 수익률 계산 (현재 백테스트 샘플과 동일한 방식 — `entry_close` vs `entry_close + 24봉`)
 
-B) 서버(VM 등)에서 상시 운영 (재시작 정책 `unless-stopped`, non-root 유저 등 프로덕션 관례 적용)
+B) 24시간 이내 어느 시점에서든 (구간 내 고가 기준) 임계값(4%)에 도달했으면 적중으로 판단 (더 관대한 기준, 실제 트레이더가 "익절"하는 방식에 가까움)
 
-C) 둘 다 — 동일 compose 파일로 로컬/서버 모두 사용
+C) Other (please describe after [Answer]: tag below)
+
+[Answer]: B
+
+## Question 2
+"학습해서 더 정교하게 맞춘다"는 구체적으로 어떻게 반영되길 원하시나요?
+
+A) 판별된 적중/실패 결과를 기존 백테스트 샘플 풀에 새로운 실측 샘플로 누적 반영 — 시간이 지날수록 `expected_return`/`n`/`hit_count` 계산이 실제 라이브 데이터까지 포함해 더 정확해짐 (기존 회고적 백테스트 로직의 자연스러운 확장, 필터링 알고리즘 자체는 안 바뀜)
+
+B) A에 더해, 마켓/시그널별 최근 적중률이 기준 이하로 떨어지면 해당 마켓을 추천 후보에서 자동 제외하거나 임계값을 동적으로 조정하는 적응형 필터링까지 추가
+
+C) 지금은 판별 결과를 기록하고 API로 조회만 가능하게 하고, 추천 로직에 자동 반영하는 건 나중에 별도로 진행
 
 D) Other (please describe after [Answer]: tag below)
 
 [Answer]: A
 
-## Question 2
-SQLite 데이터(`data/coin_recommender.db`)를 컨테이너 재생성 후에도 유지하려면 어떤 방식이 좋을까요?
-
-A) 호스트의 `./data` 디렉토리를 바인드 마운트 (호스트에서 파일에 직접 접근 가능, 현재 `db_path` 설정 그대로 사용)
-
-B) Docker named volume 사용 (호스트 경로 신경 안 써도 되지만 파일 직접 접근은 `docker exec`/`docker cp` 필요)
-
-C) Other (please describe after [Answer]: tag below)
-
-[Answer]: A
-
 ## Question 3
-업비트 인증 API 키(`access_key`/`secret_key`) 관련 처리를 어떻게 할까요?
+적중 여부 판별은 언제 실행되나요?
 
-A) 현재 코드가 인증 API를 쓰지 않으므로 추가 작업 없이 그대로 둔다 (질문하신 "가능한 형태인지"는 "아니오, 현재는 공개 API만 사용"으로 확정)
+A) 기존 시간당 스케줄러(매시 5분, `src/scheduler.py`) 실행 안에서, 24시간이 지나 아직 판별 안 된 과거 추천 건들을 함께 처리
 
-B) 향후 인증이 필요한 업비트 API(주문 등)를 대비해, `UPBIT_ACCESS_KEY` / `UPBIT_SECRET_KEY`를 지금 설정 체계(`src/config.py`)와 docker-compose 환경변수 주입 경로에 미리 추가한다 (단, 현재 코드 어디서도 참조/사용되지 않는 미사용 설정으로 남음)
+B) 별도의 독립적인 스케줄/트리거로 분리
 
 C) Other (please describe after [Answer]: tag below)
 
 [Answer]: A
 
 ## Question 4
-"API 키를 실행 단계에서 vm option으로 입력받는다"는 표현을 어떤 방식으로 구현하면 될까요? (Docker는 Java의 `-D` VM 옵션 같은 개념이 없어 보통 컨테이너 런타임 환경변수로 대응합니다)
+이 기능 배포 이전에 이미 저장된 과거 추천 기록(`recommendations` 테이블 기존 데이터)도 소급 판별할까요?
 
-A) `docker-compose up` 실행 시점의 컨테이너 환경변수로 주입 — 셸 환경변수 또는 커밋되지 않는 `.env` 파일(docker-compose가 같은 디렉토리에서 자동 로드)을 통해 전달, 이미지에는 값이 들어가지 않음
+A) 배포 이후 새로 생성되는 추천부터만 적용 (과거 기록은 그대로 미판별 상태로 둠)
 
-B) 다른 방식을 원함 (예: IntelliJ 실행 설정, 별도 시크릿 관리 도구 등 — 설명 필요)
+B) DB에 필요한 캔들 데이터가 남아있다면 과거 기록도 소급 판별해서 채움
 
 C) Other (please describe after [Answer]: tag below)
 
-[Answer]: B (intellij 실행 설정)
+[Answer]: B
+
+## Question 5
+판별 결과(적중/실패, 실제 수익률)를 API로도 노출할까요? (`GET /recommendations` 확장 또는 신규 엔드포인트)
+
+A) 네, `GET /recommendations`에 과거 추천들의 판별 결과(적중 여부, 실제 수익률)를 포함해서 보여준다
+
+B) 네, 하지만 별도의 신규 엔드포인트로 (예: `GET /recommendations/history` 또는 `GET /accuracy`)
+
+C) 아니요, 지금은 내부 데이터로만 쌓고 API 노출은 필요 없음
+
+D) Other (please describe after [Answer]: tag below)
+
+[Answer]: A

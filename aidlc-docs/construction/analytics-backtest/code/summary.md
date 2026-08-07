@@ -34,3 +34,7 @@ venv\Scripts\pytest -v
 ## 아직 없는 것 (Unit 3에서 추가)
 - `pipeline.py`, `notifier.py`, `scheduler.py`, `api.py`
 - `generate_recommendations()`는 아직 어디서도 호출되지 않음 — Unit 3의 Pipeline이 오케스트레이션
+
+## 후속 추가 — 추천 결과 사후 판별 (2026-08-07, BR11/BR12)
+
+`src/backtest.py`에 `RecommendationOutcome` dataclass와 `evaluate_outcome()` 추가 — `compute_signal_stats`(회고적 백테스트)와는 완전히 별개 경로. 특정 추천 건이 실제로 목표수익률에 도달했는지(24시간 구간 내 고가 기준) 사후 판별하는 순수 함수. `compute_signal_stats` 자체는 변경하지 않음(이미 캔들 이력 누적으로 자동 개선됨 — requirements.md 참조). `tests/test_backtest.py`에 4개 테스트 추가.

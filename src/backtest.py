@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from src.data_store import Candle
 from src.features import IchimokuPoint, as_of, is_bullish
 
 EXPECTED_RETURN_THRESHOLD = 0.04
@@ -13,6 +14,15 @@ class SignalStats:
     expected_return: float | None
     n: int
     hit_count: int
+
+
+@dataclass(frozen=True)
+class RecommendationOutcome:
+    market: str
+    run_time: datetime
+    target_reached: bool
+    realized_return: float
+    evaluated_at: datetime
 
 
 def golden_cross_event(points_1h: list[IchimokuPoint], i: int) -> bool:
@@ -78,3 +88,34 @@ def aggregate_stats(market: str, samples: list[float]) -> SignalStats:
     expected_return = (sum(samples) / n) if n > 0 else None
     hit_count = sum(1 for r in samples if r >= EXPECTED_RETURN_THRESHOLD)
     return SignalStats(market=market, expected_return=expected_return, n=n, hit_count=hit_count)
+
+
+def evaluate_outcome(
+    market: str, run_time: datetime, candles_1h: list[Candle], now: datetime
+) -> RecommendationOutcome | None:
+    """BR11: pure post-hoc evaluation of one past recommendation, independent of compute_signal_stats.
+    Returns None when there isn't yet enough data to judge (entry candle or a full 24-bar window missing) --
+    caller retries on a later run (BR12)."""
+    entry_candle = None
+    for candle in candles_1h:
+        if candle.candle_time > run_time:
+            break
+        entry_candle = candle
+
+    if entry_candle is None:
+        return None
+
+    window = [c for c in candles_1h if c.candle_time > entry_candle.candle_time][:FORWARD_BARS_1H]
+    if len(window) < FORWARD_BARS_1H:
+        return None
+
+    target_reached = any(c.high >= entry_candle.close * (1 + EXPECTED_RETURN_THRESHOLD) for c in window)
+    realized_return = (window[-1].close - entry_candle.close) / entry_candle.close
+
+    return RecommendationOutcome(
+        market=market,
+        run_time=run_time,
+        target_reached=target_reached,
+        realized_return=realized_return,
+        evaluated_at=now,
+    )

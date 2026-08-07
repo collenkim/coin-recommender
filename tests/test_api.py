@@ -65,6 +65,57 @@ def test_get_recommendations_returns_latest_run():
     assert body["recommendations"][0]["market"] == "KRW-XRP"
 
 
+def test_get_recommendations_includes_outcome_fields_when_evaluated():
+    from src.data_store import PipelineRunResult as StoredRun
+    from src.data_store import RecommendationRecord
+
+    mock_store = MagicMock()
+    mock_store.get_latest_run.return_value = StoredRun(
+        run_time=datetime(2024, 1, 1, tzinfo=UTC),
+        regime_bullish=True,
+        recommendations=[
+            RecommendationRecord(
+                "KRW-XRP", 0.05, 3, 1, target_reached=True, realized_return=0.06, evaluated_at=datetime(2024, 1, 2, tzinfo=UTC)
+            )
+        ],
+    )
+
+    with patch("src.api.start_scheduler"), patch("src.api.stop_scheduler"), \
+         patch("src.api.DataStore", return_value=mock_store):
+        from src.api import app
+
+        with TestClient(app) as client:
+            response = client.get("/recommendations")
+
+    body = response.json()
+    assert body["recommendations"][0]["target_reached"] is True
+    assert body["recommendations"][0]["realized_return"] == 0.06
+    assert body.get("history") is None
+
+
+def test_get_recommendations_with_limit_returns_history():
+    from src.data_store import PipelineRunResult as StoredRun
+    from src.data_store import RecommendationRecord
+
+    mock_store = MagicMock()
+    mock_store.get_recent_runs.return_value = [
+        StoredRun(run_time=datetime(2024, 1, 2, tzinfo=UTC), regime_bullish=True, recommendations=[RecommendationRecord("KRW-NEW", 0.05, 1, 1)]),
+        StoredRun(run_time=datetime(2024, 1, 1, tzinfo=UTC), regime_bullish=True, recommendations=[RecommendationRecord("KRW-OLD", 0.05, 1, 1)]),
+    ]
+
+    with patch("src.api.start_scheduler"), patch("src.api.stop_scheduler"), \
+         patch("src.api.DataStore", return_value=mock_store):
+        from src.api import app
+
+        with TestClient(app) as client:
+            response = client.get("/recommendations?limit=2")
+
+    body = response.json()
+    mock_store.get_recent_runs.assert_called_once_with(limit=2)
+    assert body["recommendations"][0]["market"] == "KRW-NEW"  # top-level still reflects latest run
+    assert [h["recommendations"][0]["market"] for h in body["history"]] == ["KRW-NEW", "KRW-OLD"]
+
+
 def test_post_run_triggers_pipeline_and_returns_result():
     fake_result = PipelineRunResult(
         run_time=datetime(2024, 1, 1, tzinfo=UTC), regime_bullish=True, recommendations=[FakeRecommendationRecord()]

@@ -42,3 +42,16 @@ DB 연결을 확인하는 간단한 쿼리(`SELECT 1`)를 실행해 성공하면
 ## BR8. POST /run 동기/비동기
 
 `POST /run`은 파이프라인 실행이 끝날 때까지 기다렸다가(동기) 결과를 반환한다 (스펙에 "수동 트리거"라고만 되어 있고 별도 비동기 요구가 없으므로 가장 단순한 방식 채택 — 매시 실행이 몇 분 내 끝나는 규모라 응답 지연이 크지 않음).
+
+## BR9. 추천 결과 판별 배치 (신규 — Requirements Q3/Q4)
+
+- `run_recommendation_pipeline()` 본연의 흐름(BR1) 끝에서, 판별 대상(Unit 2 BR12) 추천 건들을 모두 조회해 `Backtest.evaluate_outcome()`(Unit 2 BR11)을 호출하고 결과를 저장한다.
+- 같은 락(BR2) 안에서 실행 — 스케줄러/`POST /run` 어느 쪽으로 트리거되든 동일하게 처리되고, 파이프라인과 동시 실행되지 않음.
+- 개별 추천 건의 판별 실패(데이터 부족 등)는 로그만 남기고 나머지 건은 계속 처리한다 (BR7의 부분 실패 격리 패턴 재사용).
+- 배포 이전 과거 추천 기록도 이 배치의 판별 대상에 자연히 포함된다 (Unit 2 BR12가 `evaluated_at IS NULL`인 모든 건을 대상으로 하므로 별도 백필 스크립트 불필요).
+
+## BR10. GET /recommendations 확장 응답 (신규 — Requirements Q5, FR-L5)
+
+- 쿼리 파라미터 `limit` (기본값 1).
+- `limit=1`(기본, 파라미터 생략 포함)일 때: 응답의 최상위 구조(`run_time`, `regime_bullish`, `recommendations`)는 기존과 100% 동일하게 유지 (하위 호환) — 단, 각 `recommendations` 항목에 `target_reached`(bool | null)와 `realized_return`(float | null) 필드가 추가된다 (미판별이면 둘 다 null). 기존 클라이언트는 모르는 필드를 무시하므로 영향 없음.
+- `limit>1`일 때: 위 최상위 필드는 그대로 최신 회차를 나타내고, 추가로 `history` 필드에 최근 `limit`개 회차(최신 포함, `run_time` 내림차순)를 같은 모양(`run_time`/`regime_bullish`/`recommendations`)의 리스트로 담아 반환한다. 저장된 회차가 `limit`보다 적으면 있는 만큼만 반환 (에러 아님).

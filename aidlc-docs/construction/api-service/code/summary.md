@@ -36,3 +36,11 @@ venv\Scripts\pytest -q
 ## 프로젝트 전체 완료 상태
 
 Unit 1/2/3 모두 코드 생성 완료, 총 76개 테스트 통과. 다음은 Build and Test 단계(전체 유닛 통합 빌드/테스트 지침 문서화)입니다.
+
+## 후속 추가 — 추천 결과 사후 판별 (2026-08-07, BR9/BR10)
+
+- `src/data_store.py`: `recommendations` 테이블에 `target_reached`/`realized_return`/`evaluated_at` 컬럼 추가 (이미 배포된 DB용 `ALTER TABLE` 마이그레이션 포함, duplicate-column 에러 무시). `get_pending_evaluations`/`record_outcome`/`get_recent_runs` 추가, `get_latest_run` 신규 컬럼 반영.
+- `src/pipeline.py`: `evaluate_pending_outcomes()` 추가, `run_recommendation_pipeline()`의 기존 락 안에서 파이프라인 본 실행 직후 호출.
+- `src/api.py`: `RecommendationOut`에 `target_reached`/`realized_return` 추가, `RunSummary`/`RecommendationsResponse.history` 신규, `GET /recommendations?limit=N` 구현 (기본값 1이면 기존 응답 구조 100% 동일).
+- 테스트 15개 추가 (data_store 6, pipeline 3, api 2, backtest 4) — 전체 91개 통과.
+- **실 DB 라이브 검증**: 이 저장소의 실제 `data/coin_recommender.db`(이 기능 이전에 생성됨, 신규 컬럼 없음)를 대상으로 마이그레이션이 에러 없이 적용되는지 `PRAGMA table_info`로 전/후 확인, 실제 서버를 띄워 `GET /health`, `GET /recommendations`, `GET /recommendations?limit=3`을 호출해 정상 동작 및 하위 호환 확인.

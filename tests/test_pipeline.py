@@ -1,8 +1,9 @@
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.pipeline import AlreadyRunningError, _lock, run_recommendation_pipeline
+from src.pipeline import AlreadyRunningError, _lock, evaluate_pending_outcomes, run_recommendation_pipeline
 
 
 class FakeRecommendation:
@@ -98,3 +99,46 @@ def test_data_collection_failure_for_one_market_does_not_abort_pipeline():
     _collect_and_store(mock_store, mock_upbit, "KRW-XRP")
 
     mock_store.upsert_candles.assert_not_called()
+
+
+# --- evaluate_pending_outcomes (BR9) ---
+
+def test_evaluate_pending_outcomes_records_outcome_for_each_pending():
+    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 3, tzinfo=timezone.utc)
+    mock_store = MagicMock()
+    mock_store.get_pending_evaluations.return_value = [("KRW-XRP", run_time)]
+    fake_outcome = MagicMock()
+
+    with patch("src.pipeline.evaluate_outcome", return_value=fake_outcome) as mock_evaluate:
+        evaluate_pending_outcomes(mock_store, now)
+
+    mock_evaluate.assert_called_once_with("KRW-XRP", run_time, mock_store.get_candles.return_value, now)
+    mock_store.record_outcome.assert_called_once_with(fake_outcome)
+
+
+def test_evaluate_pending_outcomes_skips_when_not_yet_judgeable():
+    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 3, tzinfo=timezone.utc)
+    mock_store = MagicMock()
+    mock_store.get_pending_evaluations.return_value = [("KRW-XRP", run_time)]
+
+    with patch("src.pipeline.evaluate_outcome", return_value=None):
+        evaluate_pending_outcomes(mock_store, now)
+
+    mock_store.record_outcome.assert_not_called()
+
+
+def test_evaluate_pending_outcomes_isolates_per_item_failure():
+    now = datetime(2024, 1, 3, tzinfo=timezone.utc)
+    mock_store = MagicMock()
+    mock_store.get_pending_evaluations.return_value = [
+        ("KRW-BROKEN", datetime(2024, 1, 1, tzinfo=timezone.utc)),
+        ("KRW-OK", datetime(2024, 1, 1, tzinfo=timezone.utc)),
+    ]
+    fake_outcome = MagicMock()
+
+    with patch("src.pipeline.evaluate_outcome", side_effect=[RuntimeError("bad data"), fake_outcome]):
+        evaluate_pending_outcomes(mock_store, now)  # should not raise
+
+    mock_store.record_outcome.assert_called_once_with(fake_outcome)

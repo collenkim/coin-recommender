@@ -43,3 +43,16 @@
 | expected_return | float | 기대수익률 (>= 0.04) |
 | n | int | 표본 수 |
 | hit_count | int | 적중 횟수 |
+
+## RecommendationOutcome (신규 — BR11)
+특정 추천 건(run_time, market)의 사후 판별 결과
+
+| Field | Type | 설명 |
+|---|---|---|
+| market | str | 마켓 코드 |
+| run_time | datetime (UTC) | 대상 추천의 실행 시각 (Unit 3의 `recommendations` 레코드 참조) |
+| target_reached | bool | 평가 구간(24시간) 내 고가 기준 목표수익률(4%) 도달 여부 (BR11) |
+| realized_return | float | 평가 구간 마지막 봉 종가 기준 실제 수익률 (BR11, BR8과 동일 산식) |
+| evaluated_at | datetime (UTC) | 판별이 수행된 시각 |
+
+판별 불가(데이터 부족)일 때는 이 엔티티 자체를 만들지 않음 — `None` 반환으로 "아직 판별 못함"을 표현 (BR11).

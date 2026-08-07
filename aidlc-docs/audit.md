@@ -481,3 +481,75 @@ Python 3.11+, IntelliJ venv 사용 예정
 **Context**: AI-DLC docker-compose follow-up request complete.
 
 ---
+
+## New Request - Outcome Tracking / Adaptive Learning Feature
+**Timestamp**: 2026-08-07T01:00:00Z
+**User Input**: "Using AI-DLC 추천한 코인이 예측 도달 %에 부합했는지 아닌지 그 다음 동작에 판별하고, 기록하고 이런 데이터도 학습해서 좀 더 정교하게 맞출수 있도록 로직을 추가하거나 수정해줘."
+**AI Response**: Read src/scorer.py, src/backtest.py, src/features.py, src/data_store.py, src/market_selector.py to understand current logic before analyzing the request. Confirmed: expected_return/n/hit_count today are computed purely retrospectively -- compute_signal_stats() scans the coin's own historical candles for past occurrences of the same composite signal (golden cross + 4h trend + regime bullish) and averages their realized 24h forward returns. There is no live outcome tracking: recommendations are written to the `recommendations` table (run_time, market, expected_return, n, hit_count) and never revisited afterward -- no column or mechanism records whether a specific recommendation actually hit its predicted return. Request type: New Feature (Enhancement), touching all 3 units (data-pipeline: new outcome data model; analytics-backtest: how outcome data feeds into stats; api-service: when/how evaluation runs and is exposed). Complexity: Complex -- multiple genuine ambiguities (what counts as "reached" the threshold, what "learning" concretely means, when evaluation runs, whether to backfill). This will require Requirements Analysis (Standard/Comprehensive depth) followed likely by Functional Design for the affected units (new data model + complex business logic triggers that stage per code-generation.md). Created requirement-verification-questions.md and stopped for answers per requirements-analysis.md Step 6 gate.
+**Context**: Requirements Analysis for new outcome-tracking/adaptive-learning feature request.
+
+---
+
+## Requirements Analysis - Answers Received + Key Finding
+**Timestamp**: 2026-08-07T01:15:00Z
+**User Input**: Answers filled into requirement-verification-questions.md: Q1=B (고가 기준 24h 내 임계값 도달), Q2=A (백테스트 샘플 풀에 누적 반영), Q3=A (기존 스케줄러 내 처리), Q4=B (과거 기록도 소급 판별), Q5=A (GET /recommendations 확장)
+**AI Response**: Re-examined compute_signal_stats (src/backtest.py) in light of the answers. Key finding: it already re-scans the FULL stored candle history for the market on every call, so as candle collection (Unit 1) keeps accumulating hourly, expected_return/n/hit_count automatically incorporate newer real market occurrences of the signal -- with zero new code. This means Q2=A's requested effect ("학습해서 정교하게") already happens automatically today; it does not need a new "feed live outcome into backtest pool" mechanism. Narrowed the real new-build scope to: recording+tracking whether specific past recommendation instances actually hit their target (audit/visibility), not improving the scoring algorithm itself (which was never disconnected from live data). Documented this in requirements.md as an explicit "Out of Scope: adaptive scoring algorithm changes" plus FR-L6 (compute_signal_stats stays unchanged). Presenting requirements.md for approval before proceeding to Functional Design (Unit 2 analytics-backtest + Unit 3 api-service -- Unit 1 data-pipeline needs no business-logic changes, so Functional Design will be skipped for it).
+**Context**: Requirements Analysis Step 7-9, outcome-tracking feature request.
+
+---
+
+## Requirements Analysis - Approved
+**Timestamp**: 2026-08-07T01:20:00Z
+**User Input**: "Approve & Continue"
+**AI Response**: Approval recorded. Proceeding to Functional Design for Unit 2 (analytics-backtest) and Unit 3 (api-service) -- Unit 1 (data-pipeline) skipped, no business-logic changes needed there.
+**Context**: Outcome-tracking feature request.
+
+---
+
+## Functional Design - Unit 2 (analytics-backtest) + Unit 3 (api-service)
+**Timestamp**: 2026-08-07T01:30:00Z
+**User Input**: (proceeding per approved requirements; remaining decisions were implementation defaults, not user-facing forks, so no additional question file per functional-design.md Step 3's own precedent for low-risk defaults -- documented with rationale for Request Changes if wrong)
+**AI Response**: Extended existing per-unit docs in-place (brownfield modification, not new files):
+- Unit 2 business-rules.md: added BR11 (evaluate_outcome -- entry candle via as-of match on run_time, 24-bar window, target_reached via intra-window HIGH >= entry_close*1.04 per Q1=B, realized_return via same close-to-close formula as BR8 for consistency/NFR-L1) and BR12 (pending-evaluation selection, retry-forever-if-data-missing tradeoff documented as accepted for this scale).
+- Unit 2 domain-entities.md: added RecommendationOutcome entity.
+- Unit 2 business-logic-model.md: added evaluate_outcome pseudocode + a PBT invariant row.
+- Unit 3 business-rules.md: added BR9 (evaluation batch runs inside run_recommendation_pipeline, same lock, isolated per-item failure) and BR10 (GET /recommendations limit param -- default preserves exact existing response shape, limit>1 adds a non-breaking `history` field rather than changing the top-level type).
+- Unit 3 domain-entities.md: added 3 nullable columns to recommendations table (target_reached, realized_return, evaluated_at) + ALTER-TABLE-based migration note for NFR-L3 (already-deployed DB from the earlier docker-compose live test has existing rows).
+- Unit 3 business-logic-model.md: added evaluate_pending_outcomes pseudocode and extended the GET /recommendations flow.
+**Context**: Functional Design for outcome-tracking feature, presenting for combined approval (both units, one feature).
+
+---
+
+## Functional Design - Approved
+**Timestamp**: 2026-08-07T01:35:00Z
+**User Input**: "Continue to Next Stage"
+**AI Response**: Approval recorded. NFR Requirements/NFR Design skipped for this feature (reuses existing SQLite/scheduler/FastAPI stack, no new infra or tech-stack decisions). Proceeding directly to Code Generation.
+**Context**: Outcome-tracking feature request.
+
+---
+
+## Code Generation - Unit 2 (analytics-backtest) + Unit 3 (api-service)
+**Timestamp**: 2026-08-07T02:00:00Z
+**User Input**: (proceeding per approved functional design)
+**AI Response**: Modified in-place (brownfield): src/backtest.py (RecommendationOutcome dataclass + evaluate_outcome per BR11), src/data_store.py (3 nullable columns on recommendations table + ALTER-TABLE migration guarded against duplicate-column errors, RecommendationRecord extended, get_pending_evaluations/record_outcome/get_recent_runs added, get_latest_run updated to select new columns), src/pipeline.py (evaluate_pending_outcomes per BR9, wired into run_recommendation_pipeline inside the existing lock after notification), src/api.py (RecommendationOut gained target_reached/realized_return, new RunSummary model, RecommendationsResponse gained optional history field, GET /recommendations gained limit query param per BR10). Added tests: test_backtest.py (evaluate_outcome hit/no-hit/no-entry-candle/incomplete-window), test_data_store.py (migration against a hand-built legacy schema, pending/record/recent-runs), test_pipeline.py (evaluate_pending_outcomes wiring + per-item failure isolation), test_api.py (outcome fields in response, limit param history). Full suite: 91/91 passed (up from 76). Live-verified against the REAL existing data/coin_recommender.db (created before this feature, missing the new columns) -- migration confirmed to add the 3 columns without error (checked via PRAGMA table_info before/after), then booted the actual server and called GET /health, GET /recommendations, GET /recommendations?limit=3 against it -- all returned correct, backward-compatible responses (default response unchanged in shape aside from the new null-valued fields; limit=3 populated history correctly with the one existing run).
+**Files Modified**: src/backtest.py, src/data_store.py, src/pipeline.py, src/api.py, tests/test_backtest.py, tests/test_data_store.py, tests/test_pipeline.py, tests/test_api.py
+**Context**: Code Generation for outcome-tracking feature (analytics-backtest + api-service units).
+
+---
+
+## Code Generation - Approval / Outcome-Tracking Feature Complete
+**Timestamp**: 2026-08-07T02:10:00Z
+**User Input**: "Continue to Next Stage"
+**AI Response**: Approval recorded. Outcome-tracking feature (추천 결과 적중 판별 및 학습 반영) marked complete -- existing Build and Test instruction docs left as-is (not requested to update); user can ask for a refresh covering the new schema/endpoint if needed later.
+**Context**: AI-DLC outcome-tracking feature request complete.
+
+---
+
+## New Request - Docker Smoke Test Documentation
+**Timestamp**: 2026-08-07T03:00:00Z
+**User Input**: "Using AI-DLC docker-compose 로 실행하고 build 했을 때 8000 포트로 뜨게 되어있는데 테스트는 어떻게해 readme에 없는데."
+**AI Response**: Intent analysis: clear, simple, low-risk documentation gap -- README's existing `## 테스트` section only covers local `pytest` (code-level tests), nothing documents how to verify the running Docker container on port 8000 actually works. No genuine requirements ambiguity (Minimal Depth per requirements-analysis.md Step 3), so proceeded directly without a clarifying-questions file. Added a "실행 확인 (스모크 테스트)" subsection under the Docker section: `docker-compose ps` (healthcheck status), curl for /health, /recommendations, /recommendations?limit=3, POST /run, and `docker-compose logs -f`. Live-verified every documented command against a real `docker-compose up -d --build` -> confirmed `(healthy)` status, all curl commands returned the documented responses, `docker-compose logs` showed the requests, then `docker-compose down` cleaned up. Did not live-test POST /run this time (already verified working in this session and in original Build and Test -- avoided an unnecessary real Upbit/Binance API call).
+**Files Modified**: README.md
+**Context**: Docker smoke-test documentation follow-up request.
+
+---

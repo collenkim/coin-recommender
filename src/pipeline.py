@@ -1,8 +1,9 @@
 import logging
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from src.backtest import evaluate_outcome
 from src.binance_client import BinanceClient
 from src.config import settings
 from src.data_store import DataStore
@@ -10,6 +11,8 @@ from src.market_selector import MarketSelector
 from src.notifier import send_notification
 from src.scorer import BTC_MARKET, ETH_MARKET, check_market_regime, generate_recommendations
 from src.upbit_client import UpbitClient
+
+_EVALUATION_WINDOW_HOURS = 24
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,21 @@ def _collect_and_store_binance(data_store: DataStore, binance_client: BinanceCli
         logger.warning("Failed to collect Binance %s; regime check may see stale data this run", symbol, exc_info=True)
 
 
+def evaluate_pending_outcomes(data_store: DataStore, now: datetime) -> None:
+    """BR9: for each unevaluated recommendation whose 24h window has closed, judge and persist the
+    outcome (Unit 2 BR11/BR12). Isolated per-item failure, mirrors _collect_and_store's graceful
+    degradation (BR7) -- one market's missing/bad data must not block the rest."""
+    cutoff = now - timedelta(hours=_EVALUATION_WINDOW_HOURS)
+    for market, run_time in data_store.get_pending_evaluations(older_than=cutoff):
+        try:
+            candles_1h = data_store.get_candles("upbit", market, "1h")
+            outcome = evaluate_outcome(market, run_time, candles_1h, now)
+            if outcome is not None:
+                data_store.record_outcome(outcome)
+        except Exception:
+            logger.warning("Failed to evaluate outcome for %s %s; will retry next run", market, run_time, exc_info=True)
+
+
 def run_recommendation_pipeline(data_store: DataStore | None = None) -> PipelineRunResult:
     """BR1-BR3: the single orchestration entry point shared by POST /run and the scheduler."""
     if not _lock.acquire(blocking=False):
@@ -97,6 +115,8 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
             )
         except Exception:
             logger.warning("Notification step failed; pipeline run is still considered successful", exc_info=True)
+
+        evaluate_pending_outcomes(store, now)
 
         return PipelineRunResult(run_time=now, regime_bullish=regime_bullish, recommendations=recommendations)
     finally:

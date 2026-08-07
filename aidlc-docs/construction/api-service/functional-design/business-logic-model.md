@@ -20,7 +20,25 @@ FUNCTION run_recommendation_pipeline():
         EXCEPT Exception:
             log.warning(...)  # best-effort, 파이프라인 실패로 처리하지 않음
 
+        evaluate_pending_outcomes(data_store, now)  # 신규 BR9, 같은 락 안에서 실행
+
         RETURN PipelineRunResult(now, regime_bullish, recommendations)
+```
+
+## 1-1. 판별 배치 흐름 (신규 — BR9)
+
+```
+FUNCTION evaluate_pending_outcomes(data_store, now):
+    pending = DataStore.get_pending_evaluations(older_than=now - 24h)  # Unit 2 BR12
+    FOR (market, run_time) IN pending:
+        TRY:
+            candles_1h = DataStore.get_candles("upbit", market, "1h")
+            outcome = Backtest.evaluate_outcome(market, run_time, candles_1h)  # Unit 2 BR11
+            IF outcome is not None:
+                DataStore.record_outcome(outcome)
+            # None이면 아직 판별 불가 -- 이번 회차는 skip, 다음 회차에 재시도
+        EXCEPT Exception:
+            log.warning("판별 실패: %s %s", market, run_time, exc_info=True)  # 개별 실패 격리, 나머지 계속 처리
 ```
 
 ## 2. Scheduler 흐름
@@ -37,9 +55,15 @@ lifespan(app):
 ## 3. API 흐름
 
 ```
-GET /recommendations:
-    latest = DataStore.get_latest_run()
-    RETURN latest or empty response (BR6)
+GET /recommendations?limit=1 (기본값):
+    latest = DataStore.get_latest_run()  # 각 recommendation에 target_reached/realized_return 포함 (BR10)
+    RETURN latest or empty response (BR6, 구조 100% 기존과 동일 + 신규 필드)
+
+GET /recommendations?limit=N (N>1, 신규 BR10):
+    runs = DataStore.get_recent_runs(limit=N)  # 최신 포함 최근 N회차, run_time 내림차순
+    latest = runs[0]
+    RETURN {run_time: latest.run_time, regime_bullish: latest.regime_bullish,
+            recommendations: latest.recommendations, history: runs}
 
 POST /run:
     TRY:

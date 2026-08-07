@@ -55,6 +55,26 @@ RETURN SignalStats(
 )
 ```
 
+## 4. 추천 결과 사후 판별 (Backtest.evaluate_outcome, BR11)
+
+```
+FUNCTION evaluate_outcome(market, run_time, candles_1h) -> RecommendationOutcome | None:
+    entry_candle = 마지막으로 candle_time <= run_time 인 candles_1h 원소 (BR6과 동일한 as-of 개념, 원본 캔들 사용)
+    IF entry_candle is None:
+        RETURN None  # 아직 판별 불가
+
+    window = entry_candle 이후 candle_time 순으로 최대 24개 캔들
+    IF len(window) < 24:
+        RETURN None  # 24봉치 데이터가 아직 안 쌓임, 다음 회차 재시도
+
+    target_reached = ANY(c.high >= entry_candle.close * 1.04 FOR c IN window)
+    realized_return = (window[-1].close - entry_candle.close) / entry_candle.close
+
+    RETURN RecommendationOutcome(market, run_time, target_reached, realized_return, evaluated_at=now)
+```
+
+이 함수는 DataStore에 직접 접근하지 않는 순수 함수입니다 (기존 `compute_signal_stats`와 동일한 설계 원칙 — 캔들 조회는 호출자인 Unit 3가 담당).
+
 ## Testable Properties (PBT-01 identification; PBT-03은 부분 적용 대상이라 이 유닛에서 실제로 강제됨)
 
 | 대상 | 속성 유형 | 설명 |
@@ -63,3 +83,4 @@ RETURN SignalStats(
 | `compute_ichimoku` 워밍업 구간 | Invariant (PBT-03, 적용대상) | `i < 77`인 모든 봉에서 `senkou_a`/`senkou_b`는 반드시 None |
 | `compute_signal_stats` | Invariant (PBT-03, 적용대상) | `hit_count <= n` 항상 성립, `n == 0`이면 `expected_return is None` |
 | `golden_cross_event` | Invariant | 연속된 두 봉이 모두 True일 수 없음 (교차는 순간적 이벤트) |
+| `evaluate_outcome` | Invariant (신규) | window에 24개 미만 캔들이 있으면 항상 `None` 반환 (부분 판별 없음) |

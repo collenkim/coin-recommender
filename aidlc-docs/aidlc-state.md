@@ -54,8 +54,15 @@
 - [x] Code Generation — `Dockerfile`, `.dockerignore`, `docker-compose.yml`, README docker section
 - [x] Verified live: `docker compose build` → `up` → container reported `(healthy)` → `GET /health` and `GET /recommendations` returned real data from the bind-mounted `./data` DB → `docker compose down`
 
+### 🔁 Follow-up Request (2026-08-07): 추천 결과 적중 판별 및 학습 반영
+- [x] Requirements Analysis (Standard/Comprehensive — see `aidlc-docs/inception/requirements/requirements.md`, overwritten from the docker request's version; key finding: the "학습" effect already happens automatically via compute_signal_stats' full re-scan, scope narrowed to outcome recording/tracking)
+- [x] Functional Design — Unit 2 analytics-backtest (BR11/BR12, RecommendationOutcome) + Unit 3 api-service (BR9/BR10, schema migration, GET /recommendations?limit=)  — Unit 1 data-pipeline skipped (no business-logic changes)
+- [x] NFR Requirements/NFR Design — skipped (reuses existing stack, no new infra/tech-stack decisions)
+- [x] Code Generation — src/backtest.py, src/data_store.py, src/pipeline.py, src/api.py + 15 new tests (91/91 passing)
+- [x] Verified live against the real pre-existing `data/coin_recommender.db` (predates this feature): migration confirmed via PRAGMA table_info before/after, real server boot + GET /health, GET /recommendations, GET /recommendations?limit=3 all correct and backward-compatible
+
 ## Current Status
-- **Lifecycle Phase**: COMPLETE (base project) + Docker Compose infra follow-up delivered and approved
-- **Current Stage**: Docker Compose Code Generation approved (2026-08-07). Operations remains a placeholder with no defined steps (per core-workflow.md)
-- **Next Stage**: None — project delivered. Future work (e.g. real authenticated Upbit trading/order features) would re-enter as a new AI-DLC request (e.g. "Using AI-DLC, add X")
+- **Lifecycle Phase**: COMPLETE (base project) + 2 follow-up features delivered and approved (Docker Compose infra; 추천 결과 적중 판별)
+- **Current Stage**: Outcome-tracking Code Generation approved (2026-08-07). Operations remains a placeholder with no defined steps (per core-workflow.md)
+- **Next Stage**: None — all delivered work approved. Future work would re-enter as a new AI-DLC request (e.g. "Using AI-DLC, add X")
 - **Status**: Done

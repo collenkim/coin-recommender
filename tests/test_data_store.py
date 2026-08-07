@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime, timezone
 
 from hypothesis import given, settings
@@ -12,6 +13,15 @@ class FakeRecommendation:
         self.expected_return = expected_return
         self.n = n
         self.hit_count = hit_count
+
+
+class FakeOutcome:
+    def __init__(self, market, run_time, target_reached, realized_return, evaluated_at):
+        self.market = market
+        self.run_time = run_time
+        self.target_reached = target_reached
+        self.realized_return = realized_return
+        self.evaluated_at = evaluated_at
 
 
 def make_store(tmp_path) -> DataStore:
@@ -168,3 +178,90 @@ def test_get_latest_run_returns_most_recent_run_only(tmp_path):
 def test_ping_returns_true_for_healthy_db(tmp_path):
     store = make_store(tmp_path)
     assert store.ping() is True
+
+
+# --- Outcome tracking (BR9/BR11/BR12) ---
+
+def test_migration_adds_outcome_columns_to_pre_existing_db(tmp_path):
+    """DBs created before outcome tracking existed (no target_reached/realized_return/evaluated_at
+    columns) must open cleanly and gain the new columns (NFR-L3)."""
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE pipeline_runs (run_time TEXT PRIMARY KEY, regime_bullish INTEGER NOT NULL)")
+    conn.execute(
+        """
+        CREATE TABLE recommendations (
+            run_time TEXT NOT NULL, market TEXT NOT NULL, expected_return REAL NOT NULL,
+            n INTEGER NOT NULL, hit_count INTEGER NOT NULL, PRIMARY KEY (run_time, market)
+        )
+        """
+    )
+    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    conn.execute("INSERT INTO pipeline_runs (run_time, regime_bullish) VALUES (?, ?)", (run_time.isoformat(), 1))
+    conn.execute(
+        "INSERT INTO recommendations (run_time, market, expected_return, n, hit_count) VALUES (?, ?, ?, ?, ?)",
+        (run_time.isoformat(), "KRW-XRP", 0.05, 3, 1),
+    )
+    conn.commit()
+    conn.close()
+
+    store = DataStore(str(db_path))  # must not raise
+
+    result = store.get_latest_run()
+    assert result.recommendations == [RecommendationRecord("KRW-XRP", 0.05, 3, 1)]  # target_reached etc default None
+
+
+def test_get_pending_evaluations_finds_unevaluated_past_recommendation(tmp_path):
+    store = make_store(tmp_path)
+    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    store.save_run(run_time, True, [FakeRecommendation("KRW-XRP", 0.05, 3, 1)])
+
+    pending = store.get_pending_evaluations(older_than=run_time)
+
+    assert pending == [("KRW-XRP", run_time)]
+
+
+def test_get_pending_evaluations_excludes_runs_after_cutoff(tmp_path):
+    store = make_store(tmp_path)
+    run_time = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    store.save_run(run_time, True, [FakeRecommendation("KRW-XRP", 0.05, 3, 1)])
+
+    pending = store.get_pending_evaluations(older_than=datetime(2024, 1, 1, tzinfo=timezone.utc))
+
+    assert pending == []
+
+
+def test_record_outcome_then_reflected_in_get_latest_run(tmp_path):
+    store = make_store(tmp_path)
+    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    evaluated_at = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    store.save_run(run_time, True, [FakeRecommendation("KRW-XRP", 0.05, 3, 1)])
+
+    store.record_outcome(FakeOutcome("KRW-XRP", run_time, True, 0.06, evaluated_at))
+
+    result = store.get_latest_run()
+    assert result.recommendations == [
+        RecommendationRecord("KRW-XRP", 0.05, 3, 1, target_reached=True, realized_return=0.06, evaluated_at=evaluated_at)
+    ]
+    assert store.get_pending_evaluations(older_than=run_time) == []  # no longer pending
+
+
+def test_get_recent_runs_returns_newest_first(tmp_path):
+    store = make_store(tmp_path)
+    earlier = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    later = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    store.save_run(earlier, True, [FakeRecommendation("KRW-OLD", 0.05, 1, 1)])
+    store.save_run(later, True, [FakeRecommendation("KRW-NEW", 0.05, 1, 1)])
+
+    runs = store.get_recent_runs(limit=2)
+
+    assert [r.run_time for r in runs] == [later, earlier]
+    assert [r.recommendations[0].market for r in runs] == ["KRW-NEW", "KRW-OLD"]
+
+
+def test_get_recent_runs_respects_limit(tmp_path):
+    store = make_store(tmp_path)
+    for i in range(5):
+        store.save_run(datetime(2024, 1, i + 1, tzinfo=timezone.utc), True, [])
+
+    assert len(store.get_recent_runs(limit=2)) == 2

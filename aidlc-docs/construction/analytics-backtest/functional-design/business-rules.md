@@ -74,3 +74,21 @@
 ## BR10. 추천 리스트 정렬
 
 기대수익률(`expected_return`) 내림차순으로 정렬 (스펙에 명시되지 않았으나, 사용자가 결과를 볼 때 가장 유력한 추천부터 보는 것이 자연스러운 기본 동작 — 낮은 리스크의 기본값이라 별도 질문 없이 채택. 다른 정렬을 원하시면 Request Changes로 알려주세요)
+
+## BR11. 추천 결과 사후 판별 (신규 — 추천 결과 적중 판별 및 학습 반영 요청, Requirements Q1/Q2)
+
+**중요**: 이 규칙은 `expected_return`/`n`/`hit_count`(BR8) 계산 방식을 바꾸지 않습니다. BR8은 매 실행마다 코인의 전체 캔들 이력을 다시 스캔하므로, 캔들이 계속 쌓이면서 이미 자동으로 최신 실측 데이터를 반영합니다 (requirements.md "Code Investigation Findings" 참조). BR11은 별개로, **특정 추천 건(run_time, market)이 실제로 목표를 달성했는지 사후에 기록**하기 위한 규칙입니다.
+
+- **entry_candle**: 그 추천의 `run_time` 시각 이하로 가장 최근에 마감된 코인의 1시간봉 (BR6의 as-of 매칭과 동일한 개념, 단 원본 캔들 사용 — Ichimoku 계산 불필요)
+- **평가 구간(window)**: `entry_candle` 이후의 1시간봉 24개 (BR8의 forward window와 동일한 길이)
+- **판별 불가**: `entry_candle`을 못 찾거나, window에 24개 미만의 캔들만 있으면(아직 데이터 부족) 판별 보류 — `target_reached`/`realized_return` 모두 미확정 상태 유지, 다음 회차에 재시도 (BR12)
+- **target_reached** (Requirements Q1=B, 종가가 아닌 **구간 내 고가** 기준): window의 캔들 중 하나라도 `high >= entry_candle.close * 1.04`이면 True
+- **realized_return** (BR8과 동일 산식 재사용, NFR-L1): `(window[-1].close - entry_candle.close) / entry_candle.close` — window 마지막(24번째) 봉의 종가 기준
+
+`target_reached`는 BR8의 `hit_count`(과거 표본 중 몇 개가 기준을 넘었는지 세는 값)와 이름이 비슷하지만 다른 개념입니다 — `hit_count`는 회고적 백테스트 표본 집계, `target_reached`는 실제로 있었던 특정 추천 1건의 사후 결과입니다. 혼동 방지를 위해 필드명을 다르게 유지합니다.
+
+## BR12. 판별 대상 선정 (신규)
+
+- 대상: `run_time + 24시간 <= 지금`이고 아직 판별되지 않은(`evaluated_at IS NULL`) 추천 레코드 전부 (Requirements Q4 — 배포 이전 과거 기록 포함)
+- 판별 가능한 만큼만 처리하고, BR11의 "판별 불가" 케이스는 조용히 스킵 (에러 아님) — 다음 회차에 다시 대상에 포함됨
+- **알려진 한계 (Out of Scope, 별도 요청 없어 처리 안 함)**: 코인이 후보군에서 영구적으로 이탈해 더 이상 캔들이 안 쌓이면 해당 추천은 영원히 미판별 상태로 남을 수 있음 — 개인용 소규모 서비스 규모에서는 영향 미미하다고 판단해 타임아웃/포기 로직은 추가하지 않음
