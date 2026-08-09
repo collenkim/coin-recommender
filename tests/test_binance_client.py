@@ -74,3 +74,26 @@ def test_get_klines_does_not_retry_on_4xx():
 
     mock_get.assert_called_once()
     mock_sleep.assert_not_called()
+
+
+# --- get_tickers_by_volume (BR8) ---
+
+def test_get_tickers_by_volume_keeps_only_usdt_pairs():
+    client = BinanceClient()
+    payload = [
+        {"symbol": "BTCUSDT", "quoteVolume": "123456.0"},
+        {"symbol": "ETHBTC", "quoteVolume": "999999.0"},
+        {"symbol": "SOLUSDT", "quoteVolume": "654321.0"},
+    ]
+    with patch("src.binance_client.requests.get", return_value=mock_response(payload)) as mock_get:
+        tickers = client.get_tickers_by_volume()
+
+    mock_get.assert_called_once()
+    assert [t.market for t in tickers] == ["BTCUSDT", "SOLUSDT"]
+    assert tickers[0].trade_price_24h == 123456.0
+
+
+def test_get_tickers_by_volume_returns_empty_when_no_data():
+    client = BinanceClient()
+    with patch("src.binance_client.requests.get", return_value=mock_response([])):
+        assert client.get_tickers_by_volume() == []

@@ -48,7 +48,7 @@ def test_generate_recommendations_returns_empty_when_regime_not_bullish(tmp_path
     store = make_store(tmp_path)
     with patch("src.scorer.check_market_regime", return_value=False), \
          patch("src.scorer.compute_ichimoku") as mock_compute:
-        result = generate_recommendations(["KRW-XRP"], store, NOW)
+        result = generate_recommendations(["KRW-XRP"], "upbit", store, NOW)
 
     assert result == []
     mock_compute.assert_not_called()  # short-circuits before touching candidates
@@ -60,7 +60,7 @@ def test_generate_recommendations_skips_candidate_without_current_signal(tmp_pat
          patch("src.scorer.compute_ichimoku", return_value=[bullish_point()]), \
          patch("src.scorer._composite_signal_on_latest_bar", return_value=False), \
          patch("src.scorer.compute_signal_stats") as mock_stats:
-        result = generate_recommendations(["KRW-XRP"], store, NOW)
+        result = generate_recommendations(["KRW-XRP"], "upbit", store, NOW)
 
     assert result == []
     mock_stats.assert_not_called()
@@ -72,7 +72,7 @@ def test_generate_recommendations_excludes_below_threshold(tmp_path):
          patch("src.scorer.compute_ichimoku", return_value=[bullish_point()]), \
          patch("src.scorer._composite_signal_on_latest_bar", return_value=True), \
          patch("src.scorer.compute_signal_stats", return_value=SignalStats("KRW-XRP", 0.03, 5, 1)):
-        result = generate_recommendations(["KRW-XRP"], store, NOW)
+        result = generate_recommendations(["KRW-XRP"], "upbit", store, NOW)
 
     assert result == []
 
@@ -83,7 +83,7 @@ def test_generate_recommendations_excludes_n_zero(tmp_path):
          patch("src.scorer.compute_ichimoku", return_value=[bullish_point()]), \
          patch("src.scorer._composite_signal_on_latest_bar", return_value=True), \
          patch("src.scorer.compute_signal_stats", return_value=SignalStats("KRW-XRP", None, 0, 0)):
-        result = generate_recommendations(["KRW-XRP"], store, NOW)
+        result = generate_recommendations(["KRW-XRP"], "upbit", store, NOW)
 
     assert result == []
 
@@ -102,9 +102,20 @@ def test_generate_recommendations_includes_and_sorts_by_expected_return_desc(tmp
          patch("src.scorer.compute_ichimoku", return_value=[bullish_point()]), \
          patch("src.scorer._composite_signal_on_latest_bar", return_value=True), \
          patch("src.scorer.compute_signal_stats", side_effect=fake_stats):
-        result = generate_recommendations(["KRW-A", "KRW-B"], store, NOW)
+        result = generate_recommendations(["KRW-A", "KRW-B"], "upbit", store, NOW)
 
     assert [r.market for r in result] == ["KRW-B", "KRW-A"]
     assert result[0].expected_return == 0.09
     assert result[0].n == 4
     assert result[0].hit_count == 2
+
+
+def test_generate_recommendations_tags_result_with_given_source(tmp_path):
+    store = make_store(tmp_path)
+    with patch("src.scorer.check_market_regime", return_value=True), \
+         patch("src.scorer.compute_ichimoku", return_value=[bullish_point()]), \
+         patch("src.scorer._composite_signal_on_latest_bar", return_value=True), \
+         patch("src.scorer.compute_signal_stats", return_value=SignalStats("SOLUSDT", 0.05, 3, 1)):
+        result = generate_recommendations(["SOLUSDT"], "binance", store, NOW)
+
+    assert result[0].source == "binance"

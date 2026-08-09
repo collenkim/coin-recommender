@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # --- Unit 1: data-pipeline ---
     db_path: str = "data/coin_recommender.db"
     top_n_candidates: int = 20
+    recommendations_per_exchange: int = 5
     bootstrap_min_candles: int = 100
     backtest_lookback_days: int = 180
     http_timeout_seconds: float = 10.0

@@ -55,3 +55,9 @@ DB 연결을 확인하는 간단한 쿼리(`SELECT 1`)를 실행해 성공하면
 - 쿼리 파라미터 `limit` (기본값 1).
 - `limit=1`(기본, 파라미터 생략 포함)일 때: 응답의 최상위 구조(`run_time`, `regime_bullish`, `recommendations`)는 기존과 100% 동일하게 유지 (하위 호환) — 단, 각 `recommendations` 항목에 `target_reached`(bool | null)와 `realized_return`(float | null) 필드가 추가된다 (미판별이면 둘 다 null). 기존 클라이언트는 모르는 필드를 무시하므로 영향 없음.
 - `limit>1`일 때: 위 최상위 필드는 그대로 최신 회차를 나타내고, 추가로 `history` 필드에 최근 `limit`개 회차(최신 포함, `run_time` 내림차순)를 같은 모양(`run_time`/`regime_bullish`/`recommendations`)의 리스트로 담아 반환한다. 저장된 회차가 `limit`보다 적으면 있는 만큼만 반환 (에러 아님).
+
+## BR11. 거래소 구분 노출 (신규 — 거래소별 추천 5개씩 요청, Requirements FR-B5/FR-B6)
+
+- `POST /run`, `GET /recommendations` 응답의 각 추천 항목에 `source`("upbit" | "binance") 필드를 추가한다.
+- 알림 메시지(BR5)의 각 항목 앞에 거래소 구분을 표시한다: `- [{source}] {market}: 기대수익률 ...` (예: `- [upbit] KRW-XRP: ...`, `- [binance] SOLUSDT: ...`).
+- `MarketSelector`/`Pipeline`이 이미 업비트 그룹 5개 + 바이낸스 그룹 5개 순서로 리스트를 구성해 넘기므로(Unit 2 BR14), API/알림은 받은 순서를 그대로 노출하기만 하면 된다 — 별도 재정렬/그룹핑 로직 불필요.

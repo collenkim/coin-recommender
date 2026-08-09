@@ -1,13 +1,12 @@
 import logging
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, TypeVar
 
 import pyupbit
 import requests
 
-from src.data_store import Candle
+from src.data_store import Candle, TickerInfo
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +15,6 @@ _TIMEFRAME_TO_PYUPBIT_INTERVAL = {"1h": "minute60", "4h": "minute240"}
 _UPBIT_TICKER_URL = "https://api.upbit.com/v1/ticker"
 
 T = TypeVar("T")
-
-
-@dataclass(frozen=True)
-class TickerInfo:
-    market: str
-    trade_price_24h: float
 
 
 def _retry_with_backoff(fn: Callable[[], T], max_attempts: int = 3, base_delay: float = 1.0) -> T:

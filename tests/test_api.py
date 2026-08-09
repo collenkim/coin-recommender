@@ -9,11 +9,12 @@ UTC = timezone.utc
 
 
 class FakeRecommendationRecord:
-    def __init__(self, market="KRW-XRP", expected_return=0.05, n=3, hit_count=1):
+    def __init__(self, market="KRW-XRP", expected_return=0.05, n=3, hit_count=1, source="upbit"):
         self.market = market
         self.expected_return = expected_return
         self.n = n
         self.hit_count = hit_count
+        self.source = source
 
 
 def make_client():
@@ -63,6 +64,32 @@ def test_get_recommendations_returns_latest_run():
     body = response.json()
     assert body["regime_bullish"] is True
     assert body["recommendations"][0]["market"] == "KRW-XRP"
+    assert body["recommendations"][0]["source"] == "upbit"
+
+
+def test_get_recommendations_includes_binance_recommendations():
+    from src.data_store import PipelineRunResult as StoredRun
+    from src.data_store import RecommendationRecord
+
+    mock_store = MagicMock()
+    mock_store.get_latest_run.return_value = StoredRun(
+        run_time=datetime(2024, 1, 1, tzinfo=UTC),
+        regime_bullish=True,
+        recommendations=[
+            RecommendationRecord("KRW-XRP", 0.05, 3, 1, source="upbit"),
+            RecommendationRecord("SOLUSDT", 0.07, 2, 1, source="binance"),
+        ],
+    )
+
+    with patch("src.api.start_scheduler"), patch("src.api.stop_scheduler"), \
+         patch("src.api.DataStore", return_value=mock_store):
+        from src.api import app
+
+        with TestClient(app) as client:
+            response = client.get("/recommendations")
+
+    body = response.json()
+    assert {r["market"]: r["source"] for r in body["recommendations"]} == {"KRW-XRP": "upbit", "SOLUSDT": "binance"}
 
 
 def test_get_recommendations_includes_outcome_fields_when_evaluated():

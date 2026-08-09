@@ -553,3 +553,51 @@ Python 3.11+, IntelliJ venv 사용 예정
 **Context**: Docker smoke-test documentation follow-up request.
 
 ---
+
+## New Request - Binance/Upbit 거래소별 추천 5개씩 포함
+**Timestamp**: 2026-08-10T00:00:00Z
+**User Input**: "Using AI-DLC 추천 리스트를 바이낸스, 업비트 기준 각각 5개씩 포함될 수 있도록 추가해주고, 바이낸스 거래량 최상위 20개로 추천 5개 찾아줘."
+**AI Response**: Read src/market_selector.py, src/scorer.py, src/pipeline.py, src/data_store.py, src/binance_client.py, src/upbit_client.py, src/features.py, src/notifier.py, src/api.py, src/config.py to understand current state. Confirmed: recommendation candidates today come ONLY from Upbit (MarketSelector, top 20 by 24h trade value, BTC/ETH excluded); Binance is used solely as a market-regime reference (BTC/ETH 4h candles) and has never contributed recommendation candidates; only 4h Binance candles are collected (no 1h, needed for the golden-cross signal). `data_store.py` already separates candle storage by `source` ("upbit"/"binance"), so the existing signal/backtest algorithm (`compute_ichimoku`, `golden_cross_event`, `compute_signal_stats`) is fully source-agnostic and reusable without changes. Two genuine ambiguities identified with real consequences: (1) whether Binance's raw top-20-by-volume would be dominated by meaningless stablecoin/leveraged-token pairs, (2) how to handle an exchange returning fewer than 5 qualifying coins. Asked via AskUserQuestion (adapted from the project's file-based Q&A mechanism to this interactive session) rather than writing a question file and pausing indefinitely. Answers: (1) exclude stablecoin/leveraged pairs from the Binance top-20, (2) include only as many as pass the existing 4% threshold (no forced fill). Generated requirements.md (FR-B1..FR-B7, NFR-B1..B3).
+**Context**: Requirements Analysis for Binance/Upbit balanced-recommendation follow-up request.
+
+---
+
+## Functional Design - Unit 1 (data-pipeline) + Unit 2 (analytics-backtest) + Unit 3 (api-service)
+**Timestamp**: 2026-08-10T00:10:00Z
+**User Input**: (proceeding per answered requirements)
+**AI Response**: Extended existing per-unit docs in-place:
+- Unit 1 business-rules.md: BR8 (Binance top-20 candidate filter -- USDT pairs, BTC/ETH excluded, stablecoin bases and UP/DOWN/BULL/BEAR-suffixed leveraged tokens excluded) and BR9 (1h+4h candle collection for Binance candidates, mirrors BR2-BR7 exactly, source="binance"). domain-entities.md: noted `TickerInfo` is reused as-is for Binance (no new entity).
+- Unit 2 business-rules.md: BR13 (`generate_recommendations` takes `source` as a parameter and reuses BR1-BR9 unchanged; BTC/ETH regime stays a single global Binance-based gate, not per-exchange) and BR14 (cap each exchange's already-sorted list to `recommendations_per_exchange`, default 5, then concatenate upbit-group + binance-group -- no forced fill below threshold). domain-entities.md: added `source` field to `Recommendation`.
+- Unit 3 business-rules.md: BR11 (expose `source` on `POST /run`/`GET /recommendations` responses and in notification lines as `[source] market: ...`). domain-entities.md: added nullable `source` column to `recommendations` table with the same ALTER-TABLE migration pattern as the outcome-tracking columns; NULL legacy rows interpreted as "upbit" (factually correct, matches NFR-B2).
+NFR Requirements/NFR Design skipped (reuses existing SQLite/FastAPI/APScheduler stack, no new infra/tech-stack decisions).
+**Context**: Functional Design for Binance/Upbit balanced-recommendation feature, all 3 units in one pass (small, tightly-coupled change).
+
+---
+
+## Code Generation - Unit 1 + Unit 2 + Unit 3
+**Timestamp**: 2026-08-10T00:30:00Z
+**User Input**: (proceeding per functional design)
+**AI Response**: Modified in-place (brownfield):
+- `src/data_store.py`: moved `TickerInfo` here from `upbit_client.py` (now shared by both clients); added `source` to the existing outcome-columns ALTER-TABLE migration list; `RecommendationRecord`/`save_run`/`get_pending_evaluations`/`_row_to_recommendation_record` all source-aware (NULL/missing -> "upbit" default, both in SQL and via `getattr` for duck-typed recommendation objects).
+- `src/upbit_client.py`: imports `TickerInfo` from `data_store` instead of defining it locally.
+- `src/binance_client.py`: added `get_tickers_by_volume()` (public `/api/v3/ticker/24hr`, filtered to USDT-quoted symbols only -- mixing quote currencies into one volume ranking would be meaningless).
+- `src/market_selector.py`: added `BinanceMarketSelector` (BR8) with stablecoin-base and leverage-suffix exclusion, mirroring `MarketSelector`'s BTC/ETH exclusion pattern.
+- `src/scorer.py`: `Recommendation` gained `source` (default "upbit"); `generate_recommendations` now takes `source` as an explicit parameter and threads it into `data_store.get_candles` -- no other algorithm change (BR13).
+- `src/pipeline.py`: added `_collect_and_store_binance_candidate` (1h+4h collection mirroring `_collect_and_store`'s bootstrap/incremental/failure-isolation exactly); `run_recommendation_pipeline` now runs both market selectors, collects both candidate sets, calls `generate_recommendations` once per exchange, caps each to `settings.recommendations_per_exchange` (default 5) and concatenates (BR14); `evaluate_pending_outcomes` updated for the 3-tuple `(market, run_time, source)` so post-hoc evaluation reads candles from the correct exchange.
+- `src/notifier.py`: message lines now prefixed `[source]`.
+- `src/api.py`: `RecommendationOut` gained `source`; `GET /recommendations` and `POST /run` both expose it.
+- `src/config.py` / `config/settings.yaml`: added `recommendations_per_exchange: int = 5`.
+Updated/added tests across `test_market_selector.py`, `test_binance_client.py`, `test_scorer.py`, `test_pipeline.py`, `test_data_store.py`, `test_api.py`, `test_notifier.py` (existing `FakeRecommendation`/`RecommendationRecord` fixtures given a `source` field, defaulted so pre-existing assertions stay valid unchanged). Full suite: 106/106 passed (up from 91).
+Live-verified against the REAL pre-existing `data/coin_recommender.db` (backed up to the session scratchpad first): confirmed via `PRAGMA table_info` that the `source` column was added cleanly (additive migration, no data loss, all pre-existing counts intact afterward: 5 pipeline_runs, 137542 upbit_candles, 42044+ binance_candles). Booted the real server, confirmed `GET /health` and `GET /recommendations?limit=3` still return correct backward-compatible data from the migrated DB, then triggered a REAL `POST /run` against live Upbit/Binance APIs (no mocks) -- it selected exactly 20 Binance candidates (verified none were stablecoin/leveraged pairs), bootstrapped 1h+4h candles for all 20 (1000 candles each, no errors/warnings in server logs), completed in ~41s with `regime_bullish=true`, and returned `recommendations=[]` (a legitimate result -- no coin's signal cleared the 4% expected-return threshold at test time, consistent with prior live runs in this project's history, not a bug). Server stopped cleanly afterward.
+**Files Modified**: src/data_store.py, src/upbit_client.py, src/binance_client.py, src/market_selector.py, src/scorer.py, src/pipeline.py, src/notifier.py, src/api.py, src/config.py, config/settings.yaml, tests/test_market_selector.py, tests/test_binance_client.py, tests/test_scorer.py, tests/test_pipeline.py, tests/test_data_store.py, tests/test_api.py, tests/test_notifier.py
+**Context**: Code Generation for Binance/Upbit balanced-recommendation feature (all 3 units).
+
+---
+
+## Code Generation - Complete
+**Timestamp**: 2026-08-10T00:45:00Z
+**User Input**: N/A (feature delivered per approved requirements, live-verified end-to-end)
+**AI Response**: Binance/Upbit 거래소별 추천 5개씩 포함 기능 구현 완료. 기존 Build and Test 문서(build-instructions.md 등)는 갱신 요청이 없어 그대로 둠 -- 신규 설정값(`recommendations_per_exchange`)/API 필드(`source`) 반영이 필요하면 별도 요청 시 갱신 가능.
+**Context**: AI-DLC Binance/Upbit balanced-recommendation feature request complete.
+
+---

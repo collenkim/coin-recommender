@@ -22,6 +22,7 @@
 |---|---|---|
 | run_time | TEXT | 해당 실행 시각 (pipeline_runs 참조, 논리적 FK) |
 | market | TEXT | 마켓 코드 |
+| source | TEXT (nullable, 신규 BR11) — 추천 거래소 ("upbit" \| "binance") |
 | expected_return | REAL | 기대수익률 |
 | n | INTEGER | 표본 수 |
 | hit_count | INTEGER | 적중 횟수 |
@@ -31,7 +32,7 @@
 
 PRIMARY KEY (run_time, market)
 
-**마이그레이션 (NFR-L3)**: 이미 배포된 DB에도 안전하게 적용되도록, `_init_schema()`에서 `ALTER TABLE recommendations ADD COLUMN ...`을 3개 컬럼에 대해 실행하고 "duplicate column" 에러(이미 컬럼이 있는 경우)는 무시한다. `CREATE TABLE IF NOT EXISTS`만으로는 이미 존재하는 테이블에 새 컬럼이 추가되지 않으므로 별도 처리 필요.
+**마이그레이션 (NFR-L3, NFR-B2)**: 이미 배포된 DB에도 안전하게 적용되도록, `_init_schema()`에서 `ALTER TABLE recommendations ADD COLUMN ...`을 실행하고 "duplicate column" 에러(이미 컬럼이 있는 경우)는 무시한다. `CREATE TABLE IF NOT EXISTS`만으로는 이미 존재하는 테이블에 새 컬럼이 추가되지 않으므로 별도 처리 필요. `source` 컬럼은 기존 행에는 NULL로 남지만(과거엔 전부 업비트였음), API 조회 시 NULL을 "upbit"으로 취급해 하위 호환을 유지한다 (과거 데이터는 실제로 전부 업비트 추천이었으므로 이 해석이 사실과 일치, NFR-B2).
 
 ## RecommendationOutcome (조회용, Unit 2 도메인 재사용)
 Unit 2의 `RecommendationOutcome`(analytics-backtest 도메인)을 그대로 사용 — Unit 3는 이를 위 `recommendations` 테이블의 3개 신규 컬럼에 매핑해 저장/조회한다. 별도 테이블을 만들지 않음 (1추천:1결과의 단순한 관계라 컬럼 추가가 조인보다 단순, NFR-L1 취지).

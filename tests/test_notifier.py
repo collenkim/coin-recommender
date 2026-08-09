@@ -10,11 +10,12 @@ RUN_TIME = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 class FakeRecommendation:
-    def __init__(self, market, expected_return, n, hit_count):
+    def __init__(self, market, expected_return, n, hit_count, source="upbit"):
         self.market = market
         self.expected_return = expected_return
         self.n = n
         self.hit_count = hit_count
+        self.source = source
 
 
 def ok_response():
@@ -78,6 +79,19 @@ def test_message_format_with_recommendations():
     assert "KRW-XRP" in message
     assert "5.1%" in message
     assert "3회 중 2회 적중" in message
+
+
+def test_message_format_includes_exchange_source():
+    recs = [
+        FakeRecommendation("KRW-XRP", 0.051, 3, 2, source="upbit"),
+        FakeRecommendation("SOLUSDT", 0.07, 2, 1, source="binance"),
+    ]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert "[upbit] KRW-XRP" in message
+    assert "[binance] SOLUSDT" in message
 
 
 def test_message_format_with_no_recommendations():

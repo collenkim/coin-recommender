@@ -4,6 +4,7 @@
 # --- Unit 1: data-pipeline ---
 db_path: "data/coin_recommender.db"
 top_n_candidates: 20
+recommendations_per_exchange: 5  # 거래소(업비트/바이낸스)별 최종 추천 개수 상한
 bootstrap_min_candles: 100
 backtest_lookback_days: 180
 http_timeout_seconds: 10.0

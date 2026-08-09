@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS {table} (
 
 
 @dataclass(frozen=True)
+class TickerInfo:
+    market: str
+    trade_price_24h: float
+
+
+@dataclass(frozen=True)
 class Candle:
     market: str
     timeframe: str
@@ -48,6 +54,7 @@ class RecommendationRecord:
     target_reached: bool | None = None
     realized_return: float | None = None
     evaluated_at: datetime | None = None
+    source: str = "upbit"
 
 
 @dataclass(frozen=True)
@@ -84,16 +91,17 @@ _RECOMMENDATIONS_OUTCOME_COLUMNS = [
     ("target_reached", "INTEGER"),
     ("realized_return", "REAL"),
     ("evaluated_at", "TEXT"),
+    ("source", "TEXT"),
 ]
 
 
 _RECOMMENDATIONS_SELECT = (
-    "SELECT market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at FROM recommendations"
+    "SELECT market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at, source FROM recommendations"
 )
 
 
 def _row_to_recommendation_record(row) -> RecommendationRecord:
-    market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at = row
+    market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at, source = row
     return RecommendationRecord(
         market=market,
         expected_return=expected_return,
@@ -102,6 +110,7 @@ def _row_to_recommendation_record(row) -> RecommendationRecord:
         target_reached=None if target_reached is None else bool(target_reached),
         realized_return=realized_return,
         evaluated_at=None if evaluated_at is None else datetime.fromisoformat(evaluated_at),
+        source=source or "upbit",
     )
 
 
@@ -221,7 +230,10 @@ class DataStore:
         distinguish "ran, found nothing" from "never ran". `recommendations` items just need
         .market/.expected_return/.n/.hit_count attributes (duck-typed, avoids importing scorer.Recommendation)."""
         run_time_str = run_time.isoformat()
-        rows = [(run_time_str, r.market, r.expected_return, r.n, r.hit_count) for r in recommendations]
+        rows = [
+            (run_time_str, r.market, r.expected_return, r.n, r.hit_count, getattr(r, "source", "upbit"))
+            for r in recommendations
+        ]
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO pipeline_runs (run_time, regime_bullish) VALUES (?, ?)",
@@ -229,7 +241,7 @@ class DataStore:
             )
             if rows:
                 conn.executemany(
-                    "INSERT INTO recommendations (run_time, market, expected_return, n, hit_count) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO recommendations (run_time, market, expected_return, n, hit_count, source) VALUES (?, ?, ?, ?, ?, ?)",
                     rows,
                 )
 
@@ -271,14 +283,14 @@ class DataStore:
                 )
         return runs
 
-    def get_pending_evaluations(self, older_than: datetime) -> list[tuple[str, datetime]]:
-        """BR12: (market, run_time) pairs not yet evaluated, whose 24h window has already closed."""
+    def get_pending_evaluations(self, older_than: datetime) -> list[tuple[str, datetime, str]]:
+        """BR12: (market, run_time, source) triples not yet evaluated, whose 24h window has already closed."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT market, run_time FROM recommendations WHERE evaluated_at IS NULL AND run_time <= ?",
+                "SELECT market, run_time, source FROM recommendations WHERE evaluated_at IS NULL AND run_time <= ?",
                 (older_than.isoformat(),),
             ).fetchall()
-        return [(market, datetime.fromisoformat(run_time_str)) for market, run_time_str in rows]
+        return [(market, datetime.fromisoformat(run_time_str), source or "upbit") for market, run_time_str, source in rows]
 
     def record_outcome(self, outcome) -> None:
         """BR9/BR11: persists a RecommendationOutcome onto its recommendation row.

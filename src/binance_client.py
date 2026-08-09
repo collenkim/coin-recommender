@@ -4,9 +4,10 @@ from typing import Callable, TypeVar
 
 import requests
 
-from src.data_store import Candle
+from src.data_store import Candle, TickerInfo
 
 _BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+_BINANCE_TICKER_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
 _MAX_LIMIT = 1000
 
 T = TypeVar("T")
@@ -67,4 +68,21 @@ class BinanceClient:
                 volume=float(item[5]),
             )
             for item in raw
+        ]
+
+    def get_tickers_by_volume(self) -> list[TickerInfo]:
+        """24h ticker stats for every symbol on the exchange (public endpoint, no market-list lookup
+        needed first, unlike Upbit). Only USDT-quoted symbols are returned -- mixing quote currencies
+        into a single trade_price_24h ranking would not be a meaningful comparison."""
+
+        def fetch():
+            response = requests.get(_BINANCE_TICKER_24HR_URL, timeout=self._timeout)
+            response.raise_for_status()
+            return response.json()
+
+        raw = _retry_with_backoff(fetch, max_attempts=self._max_retries)
+        return [
+            TickerInfo(market=item["symbol"], trade_price_24h=float(item["quoteVolume"]))
+            for item in raw
+            if item["symbol"].endswith("USDT")
         ]

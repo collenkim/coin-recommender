@@ -61,8 +61,14 @@
 - [x] Code Generation — src/backtest.py, src/data_store.py, src/pipeline.py, src/api.py + 15 new tests (91/91 passing)
 - [x] Verified live against the real pre-existing `data/coin_recommender.db` (predates this feature): migration confirmed via PRAGMA table_info before/after, real server boot + GET /health, GET /recommendations, GET /recommendations?limit=3 all correct and backward-compatible
 
+### 🔁 Follow-up Request (2026-08-10): 바이낸스/업비트 거래소별 추천 5개씩 포함
+- [x] Requirements Analysis (Standard depth — see `aidlc-docs/inception/requirements/requirements.md`, overwritten from the outcome-tracking request's version; 2 clarifying questions resolved via AskUserQuestion: exclude stablecoin/leveraged Binance pairs, no forced-fill below 5)
+- [x] Functional Design — Unit 1 data-pipeline (BR8 Binance top-20 filter, BR9 1h+4h candle collection), Unit 2 analytics-backtest (BR13 source-parameterized `generate_recommendations`, BR14 per-exchange top-5 cap+concat), Unit 3 api-service (BR11 `source` exposure + DB migration)
+- [x] Code Generation — src/data_store.py (TickerInfo moved here, source column+migration), src/upbit_client.py, src/binance_client.py (get_tickers_by_volume), src/market_selector.py (BinanceMarketSelector), src/scorer.py, src/pipeline.py, src/notifier.py, src/api.py, src/config.py, config/settings.yaml + 7 test files updated/extended. Full suite: 106/106 passing (up from 91)
+- [x] Verified live against the real pre-existing `data/coin_recommender.db` (backed up first): migration confirmed additive via PRAGMA table_info, GET /health + GET /recommendations correct post-migration, then a real POST /run against live Upbit/Binance APIs selected exactly 20 filtered Binance candidates, bootstrapped their 1h+4h candles with no errors, and completed successfully (regime_bullish=true, 0 recommendations this run — legitimate, no coin cleared the 4% threshold at test time)
+
 ## Current Status
-- **Lifecycle Phase**: COMPLETE (base project) + 2 follow-up features delivered and approved (Docker Compose infra; 추천 결과 적중 판별)
-- **Current Stage**: Outcome-tracking Code Generation approved (2026-08-07). Operations remains a placeholder with no defined steps (per core-workflow.md)
+- **Lifecycle Phase**: COMPLETE (base project) + 3 follow-up features delivered and approved (Docker Compose infra; 추천 결과 적중 판별; 바이낸스/업비트 거래소별 추천 5개씩 포함)
+- **Current Stage**: Binance/Upbit balanced-recommendation feature complete (2026-08-10). Operations remains a placeholder with no defined steps (per core-workflow.md)
 - **Next Stage**: None — all delivered work approved. Future work would re-enter as a new AI-DLC request (e.g. "Using AI-DLC, add X")
 - **Status**: Done

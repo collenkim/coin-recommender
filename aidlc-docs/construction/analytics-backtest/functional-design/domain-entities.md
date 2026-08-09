@@ -40,6 +40,7 @@
 | Field | Type | 설명 |
 |---|---|---|
 | market | str | 마켓 코드 |
+| source | "upbit" \| "binance" | 신규 (BR13) — 추천이 산출된 거래소 |
 | expected_return | float | 기대수익률 (>= 0.04) |
 | n | int | 표본 수 |
 | hit_count | int | 적중 횟수 |

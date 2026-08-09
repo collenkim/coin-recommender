@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
-from src.market_selector import MarketSelector
-from src.upbit_client import TickerInfo
+from src.data_store import TickerInfo
+from src.market_selector import BinanceMarketSelector, MarketSelector
 
 
 def make_ticker(market: str, volume: float) -> TickerInfo:
@@ -42,3 +42,61 @@ def test_returns_empty_list_when_no_tickers():
     selector = MarketSelector(upbit_client, top_n=20)
 
     assert selector.get_candidate_markets() == []
+
+
+# --- BinanceMarketSelector (BR8) ---
+
+def test_binance_excludes_btc_and_eth():
+    binance_client = MagicMock()
+    binance_client.get_tickers_by_volume.return_value = [
+        make_ticker("BTCUSDT", 1_000_000),
+        make_ticker("ETHUSDT", 900_000),
+        make_ticker("SOLUSDT", 500_000),
+    ]
+    selector = BinanceMarketSelector(binance_client, top_n=20)
+
+    result = selector.get_candidate_markets()
+
+    assert result == ["SOLUSDT"]
+
+
+def test_binance_excludes_stablecoin_pairs():
+    binance_client = MagicMock()
+    binance_client.get_tickers_by_volume.return_value = [
+        make_ticker("USDCUSDT", 5_000_000),
+        make_ticker("FDUSDUSDT", 4_000_000),
+        make_ticker("SOLUSDT", 500_000),
+    ]
+    selector = BinanceMarketSelector(binance_client, top_n=20)
+
+    result = selector.get_candidate_markets()
+
+    assert result == ["SOLUSDT"]
+
+
+def test_binance_excludes_leveraged_tokens():
+    binance_client = MagicMock()
+    binance_client.get_tickers_by_volume.return_value = [
+        make_ticker("BTCUPUSDT", 2_000_000),
+        make_ticker("BTCDOWNUSDT", 1_500_000),
+        make_ticker("SOLUSDT", 500_000),
+    ]
+    selector = BinanceMarketSelector(binance_client, top_n=20)
+
+    result = selector.get_candidate_markets()
+
+    assert result == ["SOLUSDT"]
+
+
+def test_binance_returns_top_n_by_volume_descending():
+    binance_client = MagicMock()
+    binance_client.get_tickers_by_volume.return_value = [
+        make_ticker("AUSDT", 100),
+        make_ticker("BUSDT", 300),
+        make_ticker("CUSDT", 200),
+    ]
+    selector = BinanceMarketSelector(binance_client, top_n=2)
+
+    result = selector.get_candidate_markets()
+
+    assert result == ["BUSDT", "CUSDT"]

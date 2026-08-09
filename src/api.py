@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class RecommendationOut(BaseModel):
     market: str
+    source: str = "upbit"
     expected_return: float
     n: int
     hit_count: int
@@ -57,6 +58,7 @@ async def global_exception_handler(request, exc: Exception):
 def _to_recommendation_out(r) -> RecommendationOut:
     return RecommendationOut(
         market=r.market,
+        source=getattr(r, "source", "upbit"),
         expected_return=r.expected_return,
         n=r.n,
         hit_count=r.hit_count,
@@ -103,7 +105,7 @@ def trigger_run() -> RecommendationsResponse:
         run_time=result.run_time,
         regime_bullish=result.regime_bullish,
         recommendations=[
-            RecommendationOut(market=r.market, expected_return=r.expected_return, n=r.n, hit_count=r.hit_count)
+            RecommendationOut(market=r.market, source=r.source, expected_return=r.expected_return, n=r.n, hit_count=r.hit_count)
             for r in result.recommendations
         ],
     )

@@ -14,7 +14,8 @@ def _format_message(run_time: datetime, recommendations: list) -> str:
     if not recommendations:
         return f"{header}\n\n이번 회차 추천 없음"
     lines = [
-        f"- {r.market}: 기대수익률 {r.expected_return:.1%} (과거 {r.n}회 중 {r.hit_count}회 적중)" for r in recommendations
+        f"- [{getattr(r, 'source', 'upbit')}] {r.market}: 기대수익률 {r.expected_return:.1%} (과거 {r.n}회 중 {r.hit_count}회 적중)"
+        for r in recommendations
     ]
     return header + "\n\n" + "\n".join(lines)
 

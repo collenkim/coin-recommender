@@ -8,11 +8,12 @@ from tests.generators import candle_list_strategy
 
 
 class FakeRecommendation:
-    def __init__(self, market, expected_return, n, hit_count):
+    def __init__(self, market, expected_return, n, hit_count, source="upbit"):
         self.market = market
         self.expected_return = expected_return
         self.n = n
         self.hit_count = hit_count
+        self.source = source
 
 
 class FakeOutcome:
@@ -149,6 +150,20 @@ def test_save_run_then_get_latest_run_roundtrip(tmp_path):
     }
 
 
+def test_save_run_persists_source_per_recommendation(tmp_path):
+    store = make_store(tmp_path)
+    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    recs = [
+        FakeRecommendation("KRW-XRP", 0.05, 3, 1, source="upbit"),
+        FakeRecommendation("SOLUSDT", 0.09, 4, 2, source="binance"),
+    ]
+
+    store.save_run(run_time, True, recs)
+    result = store.get_latest_run()
+
+    assert {r.market: r.source for r in result.recommendations} == {"KRW-XRP": "upbit", "SOLUSDT": "binance"}
+
+
 def test_save_run_with_zero_recommendations_is_distinguishable_from_never_run(tmp_path):
     store = make_store(tmp_path)
     run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -209,6 +224,7 @@ def test_migration_adds_outcome_columns_to_pre_existing_db(tmp_path):
 
     result = store.get_latest_run()
     assert result.recommendations == [RecommendationRecord("KRW-XRP", 0.05, 3, 1)]  # target_reached etc default None
+    assert result.recommendations[0].source == "upbit"  # legacy rows (pre-source column) treated as upbit (NFR-B2)
 
 
 def test_get_pending_evaluations_finds_unevaluated_past_recommendation(tmp_path):
@@ -218,7 +234,7 @@ def test_get_pending_evaluations_finds_unevaluated_past_recommendation(tmp_path)
 
     pending = store.get_pending_evaluations(older_than=run_time)
 
-    assert pending == [("KRW-XRP", run_time)]
+    assert pending == [("KRW-XRP", run_time, "upbit")]
 
 
 def test_get_pending_evaluations_excludes_runs_after_cutoff(tmp_path):
@@ -229,6 +245,16 @@ def test_get_pending_evaluations_excludes_runs_after_cutoff(tmp_path):
     pending = store.get_pending_evaluations(older_than=datetime(2024, 1, 1, tzinfo=timezone.utc))
 
     assert pending == []
+
+
+def test_get_pending_evaluations_includes_source(tmp_path):
+    store = make_store(tmp_path)
+    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    store.save_run(run_time, True, [FakeRecommendation("SOLUSDT", 0.05, 3, 1, source="binance")])
+
+    pending = store.get_pending_evaluations(older_than=run_time)
+
+    assert pending == [("SOLUSDT", run_time, "binance")]
 
 
 def test_record_outcome_then_reflected_in_get_latest_run(tmp_path):
