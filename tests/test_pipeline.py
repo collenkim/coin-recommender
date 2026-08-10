@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -120,29 +120,59 @@ def test_data_collection_failure_for_one_market_does_not_abort_pipeline():
 
 def test_binance_candidate_collection_failure_for_one_timeframe_does_not_abort_pipeline():
     mock_store = MagicMock()
-    mock_store.get_last_candle_time.return_value = None
+    mock_store.get_first_candle_time.return_value = None
     mock_binance = MagicMock()
-    mock_binance.get_klines.side_effect = RuntimeError("network error")
+    mock_binance.get_klines_since.side_effect = RuntimeError("network error")
 
-    from src.pipeline import _collect_and_store_binance_candidate
+    from src.pipeline import _collect_and_store_binance
 
     # Should not raise -- mirrors _collect_and_store's per-market failure isolation (BR9)
-    _collect_and_store_binance_candidate(mock_store, mock_binance, "SOLUSDT")
+    _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h", "4h"))
 
     mock_store.upsert_candles.assert_not_called()
 
 
 def test_binance_candidate_collection_stores_both_timeframes():
     mock_store = MagicMock()
-    mock_store.get_last_candle_time.return_value = None
+    mock_store.get_first_candle_time.return_value = None
     mock_binance = MagicMock()
 
-    from src.pipeline import _collect_and_store_binance_candidate
+    from src.pipeline import _collect_and_store_binance
 
-    _collect_and_store_binance_candidate(mock_store, mock_binance, "SOLUSDT")
+    _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h", "4h"))
 
     stored_timeframes = {call.args[2] for call in mock_store.upsert_candles.call_args_list}
     assert stored_timeframes == {"1h", "4h"}
+
+
+def test_binance_collection_backfills_when_stored_history_is_shallower_than_lookback():
+    """The bug this fixes: markets stored under the old 1000-candle cap must reach back, and the
+    incremental path only ever moves forward."""
+    mock_store = MagicMock()
+    mock_store.get_first_candle_time.return_value = datetime.now(timezone.utc) - timedelta(days=10)
+    mock_binance = MagicMock()
+
+    from src.pipeline import _collect_and_store_binance
+
+    _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h",))
+
+    mock_binance.get_klines_since.assert_called_once()
+    mock_binance.get_klines.assert_not_called()
+
+
+def test_binance_collection_uses_incremental_once_history_is_deep_enough():
+    mock_store = MagicMock()
+    mock_store.get_first_candle_time.return_value = datetime.now(timezone.utc) - timedelta(days=999)
+    mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(hours=2)
+    mock_binance = MagicMock()
+    mock_binance.get_klines.return_value = []
+
+    from src.pipeline import _collect_and_store_binance
+
+    _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h",))
+
+    mock_binance.get_klines_since.assert_not_called()
+    mock_binance.get_klines.assert_called_once()
 
 
 # --- evaluate_pending_outcomes (BR9) ---

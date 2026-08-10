@@ -1,11 +1,13 @@
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
 Source = Literal["upbit", "binance"]
+
+TIMEFRAME_HOURS = {"1h": 1, "4h": 4}
 
 _TABLE_BY_SOURCE = {
     "upbit": "upbit_candles",
@@ -45,6 +47,23 @@ class Candle:
     volume: float
 
 
+def close_time(candle: Candle) -> datetime:
+    """When the candle's interval finishes -- candle_time is the OPEN time on both exchanges."""
+    return candle.candle_time + timedelta(hours=TIMEFRAME_HOURS[candle.timeframe])
+
+
+def drop_unclosed(candles: list[Candle], now: datetime | None = None) -> list[Candle]:
+    """Discard the still-forming candle both exchanges return as their last element.
+
+    Using it made the live check read a partial bar, which contradicted BR7 ("가장 최근 마감된 1h 봉")
+    and quietly defeated the scheduler's :05 offset -- that offset exists precisely to wait for the
+    bar to close. It also meant a golden cross could appear and then vanish when the bar settled,
+    and that no reproducible entry price existed to publish.
+    """
+    reference = now or datetime.now(timezone.utc)
+    return [c for c in candles if close_time(c) <= reference]
+
+
 @dataclass(frozen=True)
 class RecommendationRecord:
     market: str
@@ -55,6 +74,9 @@ class RecommendationRecord:
     realized_return: float | None = None
     evaluated_at: datetime | None = None
     source: str = "upbit"
+    entry_time: datetime | None = None
+    entry_price: float | None = None
+    max_drawdown: float | None = None
 
 
 @dataclass(frozen=True)
@@ -92,16 +114,32 @@ _RECOMMENDATIONS_OUTCOME_COLUMNS = [
     ("realized_return", "REAL"),
     ("evaluated_at", "TEXT"),
     ("source", "TEXT"),
+    ("entry_time", "TEXT"),
+    ("entry_price", "REAL"),
+    ("max_drawdown", "REAL"),
 ]
 
 
 _RECOMMENDATIONS_SELECT = (
-    "SELECT market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at, source FROM recommendations"
+    "SELECT market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at, source, "
+    "entry_time, entry_price, max_drawdown FROM recommendations"
 )
 
 
 def _row_to_recommendation_record(row) -> RecommendationRecord:
-    market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at, source = row
+    (
+        market,
+        expected_return,
+        n,
+        hit_count,
+        target_reached,
+        realized_return,
+        evaluated_at,
+        source,
+        entry_time,
+        entry_price,
+        max_drawdown,
+    ) = row
     return RecommendationRecord(
         market=market,
         expected_return=expected_return,
@@ -111,6 +149,9 @@ def _row_to_recommendation_record(row) -> RecommendationRecord:
         realized_return=realized_return,
         evaluated_at=None if evaluated_at is None else datetime.fromisoformat(evaluated_at),
         source=source or "upbit",
+        entry_time=None if entry_time is None else datetime.fromisoformat(entry_time),
+        entry_price=entry_price,
+        max_drawdown=max_drawdown,
     )
 
 
@@ -191,6 +232,19 @@ class DataStore:
             return None
         return datetime.fromisoformat(row[0])
 
+    def get_first_candle_time(self, source: Source, market: str, timeframe: str) -> datetime | None:
+        """Earliest stored candle -- lets the collector tell "history is shorter than the configured
+        lookback" (needs backfilling) apart from "already deep enough" (incremental is enough)."""
+        table = _TABLE_BY_SOURCE[source]
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT MIN(candle_time) FROM {table} WHERE market = ? AND timeframe = ?",
+                (market, timeframe),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return datetime.fromisoformat(row[0])
+
     def get_candles(
         self,
         source: Source,
@@ -230,10 +284,22 @@ class DataStore:
         distinguish "ran, found nothing" from "never ran". `recommendations` items just need
         .market/.expected_return/.n/.hit_count attributes (duck-typed, avoids importing scorer.Recommendation)."""
         run_time_str = run_time.isoformat()
-        rows = [
-            (run_time_str, r.market, r.expected_return, r.n, r.hit_count, getattr(r, "source", "upbit"))
-            for r in recommendations
-        ]
+        rows = []
+        for r in recommendations:
+            entry_time = getattr(r, "entry_time", None)
+            rows.append(
+                (
+                    run_time_str,
+                    r.market,
+                    r.expected_return,
+                    r.n,
+                    r.hit_count,
+                    getattr(r, "source", "upbit"),
+                    entry_time.isoformat() if entry_time is not None else None,
+                    getattr(r, "entry_price", None),
+                    getattr(r, "max_drawdown", None),
+                )
+            )
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO pipeline_runs (run_time, regime_bullish) VALUES (?, ?)",
@@ -241,7 +307,8 @@ class DataStore:
             )
             if rows:
                 conn.executemany(
-                    "INSERT INTO recommendations (run_time, market, expected_return, n, hit_count, source) VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO recommendations (run_time, market, expected_return, n, hit_count, source, "
+                    "entry_time, entry_price, max_drawdown) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                 )
 

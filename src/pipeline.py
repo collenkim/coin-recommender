@@ -47,38 +47,33 @@ def _collect_and_store(data_store: DataStore, upbit_client: UpbitClient, market:
             logger.warning("Failed to collect %s %s; skipping this market/timeframe this run", market, timeframe, exc_info=True)
 
 
-def _collect_and_store_binance(data_store: DataStore, binance_client: BinanceClient, symbol: str) -> None:
-    try:
-        last_time = data_store.get_last_candle_time("binance", symbol, "4h")
-        if last_time is None:
-            count = max(settings.bootstrap_min_candles, settings.backtest_lookback_days * 24 // 4)
-            candles = binance_client.get_klines(symbol, "4h", limit=count)
-        else:
-            candles = binance_client.get_klines(symbol, "4h", start_time=last_time, limit=1000)
-            candles = [c for c in candles if c.candle_time > last_time]
-        data_store.upsert_candles("binance", symbol, "4h", candles)
-    except Exception:
-        logger.warning("Failed to collect Binance %s; regime check may see stale data this run", symbol, exc_info=True)
+def _collect_and_store_binance(
+    data_store: DataStore, binance_client: BinanceClient, symbol: str, timeframes: tuple[str, ...] = ("4h",)
+) -> None:
+    """BR9 (data-pipeline): backfill-or-incremental Binance collection, per-timeframe failure isolated.
 
+    Backfill exists because the plain incremental path can only ever move forward: markets stored
+    before pagination was added hold ~1000 candles and would never reach back to the configured
+    lookback on their own. Once history is deep enough this branch stops firing and each run costs
+    a single request per timeframe.
 
-def _collect_and_store_binance_candidate(data_store: DataStore, binance_client: BinanceClient, symbol: str) -> None:
-    """BR9 (data-pipeline): 1h+4h collection for a Binance recommendation candidate, mirroring
-    _collect_and_store's bootstrap-or-incremental + per-market failure isolation for Upbit."""
-    for interval in ("1h", "4h"):
+    Known cost (accepted): a coin listed more recently than the lookback window can never satisfy
+    `first <= target_start`, so it re-fetches its (short) history each run. That is a handful of
+    extra requests per hour, well inside Binance's public rate limit.
+    """
+    target_start = datetime.now(timezone.utc) - timedelta(days=settings.backtest_lookback_days)
+    for timeframe in timeframes:
         try:
-            last_time = data_store.get_last_candle_time("binance", symbol, interval)
-            if last_time is None:
-                count = max(
-                    settings.bootstrap_min_candles,
-                    settings.backtest_lookback_days * 24 // (1 if interval == "1h" else 4),
-                )
-                candles = binance_client.get_klines(symbol, interval, limit=count)
+            first_time = data_store.get_first_candle_time("binance", symbol, timeframe)
+            if first_time is None or first_time > target_start:
+                candles = binance_client.get_klines_since(symbol, timeframe, target_start)
             else:
-                candles = binance_client.get_klines(symbol, interval, start_time=last_time, limit=1000)
+                last_time = data_store.get_last_candle_time("binance", symbol, timeframe)
+                candles = binance_client.get_klines(symbol, timeframe, start_time=last_time, limit=1000)
                 candles = [c for c in candles if c.candle_time > last_time]
-            data_store.upsert_candles("binance", symbol, interval, candles)
+            data_store.upsert_candles("binance", symbol, timeframe, candles)
         except Exception:
-            logger.warning("Failed to collect Binance %s %s; skipping this market/timeframe this run", symbol, interval, exc_info=True)
+            logger.warning("Failed to collect Binance %s %s; skipping this market/timeframe this run", symbol, timeframe, exc_info=True)
 
 
 def evaluate_pending_outcomes(data_store: DataStore, now: datetime) -> None:
@@ -119,7 +114,7 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
         for market in candidates:
             _collect_and_store(store, upbit_client, market)
         for symbol in binance_candidates:
-            _collect_and_store_binance_candidate(store, binance_client, symbol)
+            _collect_and_store_binance(store, binance_client, symbol, timeframes=("1h", "4h"))
         _collect_and_store_binance(store, binance_client, BTC_MARKET)
         _collect_and_store_binance(store, binance_client, ETH_MARKET)
 

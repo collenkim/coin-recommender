@@ -97,3 +97,45 @@ def test_get_tickers_by_volume_returns_empty_when_no_data():
     client = BinanceClient()
     with patch("src.binance_client.requests.get", return_value=mock_response([])):
         assert client.get_tickers_by_volume() == []
+
+
+# --- get_klines_since (pagination past Binance's 1000-candle response cap) ---
+
+HOUR_MS = 3_600_000
+
+
+def kline_at(ts_ms: int) -> list:
+    return [ts_ms, "100.0", "110.0", "90.0", "105.0", "1000.0", 0, "0", 0, "0", "0", "0"]
+
+
+def test_get_klines_since_pages_past_the_response_cap():
+    """A full page means there may be more; Binance re-sends the startTime candle, so overlap must
+    be dropped rather than duplicated. _MAX_LIMIT is patched small to keep the fixture readable."""
+    client = BinanceClient()
+    page1 = [kline_at(0), kline_at(HOUR_MS)]  # full page -> keep going
+    page2 = [kline_at(HOUR_MS), kline_at(2 * HOUR_MS)]  # first item overlaps page1's last
+    page3 = [kline_at(2 * HOUR_MS)]  # only the overlap left -> stop
+
+    with patch("src.binance_client._MAX_LIMIT", 2), \
+         patch("src.binance_client.requests.get",
+               side_effect=[mock_response(page1), mock_response(page2), mock_response(page3)]) as mock_get:
+        candles = client.get_klines_since("BTCUSDT", "1h", datetime.fromtimestamp(0, tz=timezone.utc))
+
+    assert mock_get.call_count == 3
+    assert [int(c.candle_time.timestamp() * 1000) for c in candles] == [0, HOUR_MS, 2 * HOUR_MS]
+
+
+def test_get_klines_since_stops_immediately_on_a_short_page():
+    client = BinanceClient()
+    with patch("src.binance_client._MAX_LIMIT", 100), \
+         patch("src.binance_client.requests.get", return_value=mock_response([kline_at(0)])) as mock_get:
+        candles = client.get_klines_since("BTCUSDT", "1h", datetime.fromtimestamp(0, tz=timezone.utc))
+
+    mock_get.assert_called_once()
+    assert len(candles) == 1
+
+
+def test_get_klines_since_returns_empty_when_no_history():
+    client = BinanceClient()
+    with patch("src.binance_client.requests.get", return_value=mock_response([])):
+        assert client.get_klines_since("BTCUSDT", "1h", datetime.fromtimestamp(0, tz=timezone.utc)) == []

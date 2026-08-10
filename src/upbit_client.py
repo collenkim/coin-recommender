@@ -6,7 +6,7 @@ from typing import Callable, TypeVar
 import pyupbit
 import requests
 
-from src.data_store import Candle, TickerInfo
+from src.data_store import Candle, TickerInfo, drop_unclosed
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class UpbitClient:
         if df is None or df.empty:
             return []
 
-        return [
+        candles = [
             Candle(
                 market=market,
                 timeframe=timeframe,
@@ -74,6 +74,7 @@ class UpbitClient:
             )
             for index, row in df.iterrows()
         ]
+        return drop_unclosed(candles)
 
     def get_tickers_by_volume(self) -> list[TickerInfo]:
         markets = pyupbit.get_tickers(fiat="KRW")

@@ -29,6 +29,11 @@
 | target_reached | INTEGER (nullable, 0/1) | 신규 (BR9/BR11) — 사후 판별 결과, 미판별이면 NULL |
 | realized_return | REAL (nullable) | 신규 (BR9/BR11) — 사후 판별된 실제 수익률, 미판별이면 NULL |
 | evaluated_at | TEXT (nullable, ISO) | 신규 (BR9) — 판별 수행 시각, 미판별이면 NULL |
+| entry_time | TEXT (nullable, ISO) | 신규 (BR12) — 진입 기준 봉의 마감 시각 |
+| entry_price | REAL (nullable) | 신규 (BR12) — 진입 기준 봉의 종가 |
+| max_drawdown | REAL (nullable) | 신규 (BR12) — 과거 표본의 최악 진입 후 낙폭 (음수) |
+
+`target_price`(진입가×1.04)와 `exit_deadline`(진입+24시간)은 파생값이라 저장하지 않고 API 응답 시 계산한다 (BR12).
 
 PRIMARY KEY (run_time, market)
 

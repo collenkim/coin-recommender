@@ -3,7 +3,14 @@ from datetime import datetime, timedelta, timezone
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from src.backtest import aggregate_stats, compute_signal_stats, evaluate_outcome, golden_cross_event
+from src.backtest import (
+    GOLDEN_CROSS_LOOKBACK_BARS,
+    aggregate_stats,
+    compute_signal_stats,
+    evaluate_outcome,
+    golden_cross_event,
+    golden_cross_within,
+)
 from src.data_store import Candle
 from src.features import IchimokuPoint
 
@@ -57,30 +64,86 @@ def test_golden_cross_event_false_when_indicators_missing():
     assert golden_cross_event(points, 1) is False
 
 
+# --- golden_cross_within (BR4 window) ---
+
+def test_golden_cross_within_true_on_the_crossover_bar_itself():
+    points = [point(0, tenkan=9, kijun=10), point(1, tenkan=11, kijun=10)]
+    assert golden_cross_within(points, 1) is True
+
+
+CROSS_BAR = 1  # the bar the golden cross fires on in the fixtures below
+
+
+def _points_with_cross_at_bar_1(total_bars: int) -> list[IchimokuPoint]:
+    points = [point(0, tenkan=9, kijun=10), point(1, tenkan=11, kijun=10)]
+    points += [point(h) for h in range(2, total_bars)]
+    return points
+
+
+def test_golden_cross_within_true_on_the_last_bar_still_inside_the_lookback():
+    last_valid = CROSS_BAR + GOLDEN_CROSS_LOOKBACK_BARS - 1
+    points = _points_with_cross_at_bar_1(last_valid + 2)
+
+    assert golden_cross_within(points, last_valid) is True
+
+
+def test_golden_cross_within_false_once_the_cross_falls_out_of_the_lookback():
+    expired = CROSS_BAR + GOLDEN_CROSS_LOOKBACK_BARS
+    points = _points_with_cross_at_bar_1(expired + 1)
+
+    assert golden_cross_within(points, expired) is False
+
+
+def test_golden_cross_within_false_when_no_cross_at_all():
+    points = [point(h, tenkan=9, kijun=10) for h in range(0, 5)]
+    assert golden_cross_within(points, 4) is False
+
+
 # --- compute_signal_stats (integration of BR6/BR7/BR8) ---
 
 def _bullish_4h_series(hours: list[int]) -> list[IchimokuPoint]:
     return [point(h, close=100.0, senkou_a=10.0, senkou_b=5.0) for h in hours]
 
 
-def test_compute_signal_stats_counts_valid_historical_signal():
-    # Golden cross at hour=10 (bar index 10), 4h trend bullish, regime bullish, far enough in the past.
-    points_1h = [point(h, tenkan=9, kijun=10) for h in range(0, 10)]
+def test_compute_signal_stats_takes_one_sample_per_crossover():
+    """BR8 dedup: a cross at bar 10 makes bars 10..12 actionable (lookback=3), but they are the same
+    event -- only the first qualifying bar is sampled, so n counts crossovers, not entry bars."""
+    assert GOLDEN_CROSS_LOOKBACK_BARS == 3  # the expectations below are written for this value
+
+    points_1h = [point(h, close=100.0, tenkan=9, kijun=10) for h in range(0, 10)]
     points_1h.append(point(10, close=100.0, tenkan=11, kijun=10))  # cross event here
-    points_1h += [point(h, close=100.0 + h) for h in range(11, 40)]  # need i+24 to exist
-    points_1h[10 + 24] = point(10 + 24, close=106.0, tenkan=1, kijun=1)  # +6% forward return
+    points_1h += [point(h, close=100.0) for h in range(11, 40)]  # flat; no further cross (tenkan=None)
+    points_1h[34] = point(34, close=106.0)  # forward bar of entry bar 10 -> +6%
+    points_1h[35] = point(35, close=100.0)  # would be entry bar 11's forward bar, must NOT be sampled
+    points_1h[36] = point(36, close=100.0)  # would be entry bar 12's forward bar, must NOT be sampled
 
-    points_4h = _bullish_4h_series(list(range(0, 40, 4)))
-    btc = _bullish_4h_series(list(range(0, 40, 4)))
-    eth = _bullish_4h_series(list(range(0, 40, 4)))
+    bullish_4h = _bullish_4h_series(list(range(0, 40, 4)))
+    now = T0 + timedelta(hours=100)  # far enough that the signals are > 24h old
 
-    now = T0 + timedelta(hours=100)  # far enough that hour=10 signal is > 24h old
+    stats = compute_signal_stats("KRW-XRP", points_1h, bullish_4h, bullish_4h, bullish_4h, now)
 
-    stats = compute_signal_stats("KRW-XRP", points_1h, points_4h, btc, eth, now)
+    assert stats.n == 1  # one crossover -> one sample, not three
+    assert abs(stats.expected_return - 0.06) < 1e-9  # the +6% entry, undiluted by its own duplicates
+    assert stats.hit_count == 1
 
-    assert stats.n == 1
-    assert stats.expected_return is not None
-    assert abs(stats.expected_return - 0.06) < 1e-9
+
+def test_compute_signal_stats_counts_two_separate_crossovers_separately():
+    """Dedup must not collapse genuinely distinct events: two crossovers far apart give n == 2."""
+    points_1h = [point(h, close=100.0, tenkan=9, kijun=10) for h in range(0, 10)]
+    points_1h.append(point(10, close=100.0, tenkan=11, kijun=10))  # cross 1
+    points_1h += [point(h, close=100.0, tenkan=9, kijun=10) for h in range(11, 20)]
+    points_1h.append(point(20, close=100.0, tenkan=11, kijun=10))  # cross 2
+    points_1h += [point(h, close=100.0) for h in range(21, 50)]
+    points_1h[34] = point(34, close=106.0)  # cross 1 forward -> +6%
+    points_1h[44] = point(44, close=100.0)  # cross 2 forward ->  0%
+
+    bullish_4h = _bullish_4h_series(list(range(0, 50, 4)))
+    now = T0 + timedelta(hours=200)
+
+    stats = compute_signal_stats("KRW-XRP", points_1h, bullish_4h, bullish_4h, bullish_4h, now)
+
+    assert stats.n == 2
+    assert abs(stats.expected_return - 0.03) < 1e-9  # mean of +6% and 0%
     assert stats.hit_count == 1
 
 
@@ -124,6 +187,35 @@ def test_compute_signal_stats_excludes_when_coin_4h_trend_fails():
     stats = compute_signal_stats("KRW-XRP", points_1h, bearish_4h, bullish_regime, bullish_regime, now)
 
     assert stats.n == 0
+
+
+def test_compute_signal_stats_reports_worst_drawdown_across_samples():
+    """BR16: max_drawdown comes from the raw candles' lows, which IchimokuPoint does not carry."""
+    points_1h = [point(h, close=100.0, tenkan=9, kijun=10) for h in range(0, 10)]
+    points_1h.append(point(10, close=100.0, tenkan=11, kijun=10))  # cross -> entry bar 10
+    points_1h += [point(h, close=100.0) for h in range(11, 40)]
+
+    candles = [candle(h, close=100.0) for h in range(0, 40)]
+    candles[15] = Candle("KRW-XRP", "1h", T0 + timedelta(hours=15), 100.0, 100.0, 93.0, 100.0, 1.0)  # -7% dip
+
+    bullish_4h = _bullish_4h_series(list(range(0, 40, 4)))
+    now = T0 + timedelta(hours=100)
+
+    stats = compute_signal_stats("KRW-XRP", points_1h, bullish_4h, bullish_4h, bullish_4h, now, candles_1h=candles)
+
+    assert stats.n == 1
+    assert abs(stats.max_drawdown - (-0.07)) < 1e-9
+
+
+def test_compute_signal_stats_leaves_drawdown_none_without_candles():
+    points_1h = [point(h, close=100.0, tenkan=9, kijun=10) for h in range(0, 10)]
+    points_1h.append(point(10, close=100.0, tenkan=11, kijun=10))
+    points_1h += [point(h, close=100.0) for h in range(11, 40)]
+    bullish_4h = _bullish_4h_series(list(range(0, 40, 4)))
+
+    stats = compute_signal_stats("KRW-XRP", points_1h, bullish_4h, bullish_4h, bullish_4h, T0 + timedelta(hours=100))
+
+    assert stats.max_drawdown is None
 
 
 # --- aggregate_stats (PBT-03 invariants) ---

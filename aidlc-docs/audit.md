@@ -601,3 +601,86 @@ Live-verified against the REAL pre-existing `data/coin_recommender.db` (backed u
 **Context**: AI-DLC Binance/Upbit balanced-recommendation feature request complete.
 
 ---
+
+## New Request - 추천이 계속 안 나오는 원인 진단
+**Timestamp**: 2026-08-10T06:10:00Z
+**User Input**: "지금 이더랑 비트가 상승채널에 온게 아닌가. 계속 추천 코인이 없네"
+**AI Response**: Treated as a defect suspicion and investigated with real data rather than speculating. Wrote read-only diagnostic scripts against the live DB (scratchpad only, no repo files). Findings: (1) the user was RIGHT -- the BTC/ETH regime gate passes (BTC 65,049 and ETH 1,919 both above a bullish cloud on the latest closed 4h bar; last 5 pipeline_runs all regime_bullish=1), so the regime was never the blocker; (2) the service is healthy -- docker container up 49min and healthy, hourly scheduler running, and all 40 current candidates (20 upbit + 20 binance) had candles 12 minutes old (the stale markets seen at first glance were simply coins that had dropped out of the top-20, which is correct behaviour, not a collection failure); (3) the real bottleneck is Unit 2 BR4's "golden cross on the EXACT latest bar" -- 0 of 40 fresh candidates satisfied it, because coins cross on average once per ~30 bars so the chance of landing on the latest bar is ~3% per coin. Ran a 30-day (720-hour) historical simulation: the current logic would have produced a recommendation in only 7 of 720 hours (1.0%) = one opportunity every ~103 hours. Hit DB lock contention mid-analysis (the live container was writing) and switched to an sqlite backup-API snapshot so the running production container was never disturbed.
+**Context**: Diagnostic investigation, no code changed yet. Confirmed not-a-bug; converted into a tuning decision.
+
+---
+
+## Requirements Analysis - 빈도 개선 방향 결정 (사용자 1차 선택을 실측으로 반박)
+**Timestamp**: 2026-08-10T06:25:00Z
+**User Input**: (AskUserQuestion round 1) "기대수익률 임계값 낮춤" + "최근 3봉"
+**AI Response**: Did NOT implement the stated choice, because measurement contradicted it -- per the project's behavioural rules ("근거가 있으면 반박한다"). Threshold sweep on real data showed: 4%→3% changes nothing at all (identical qualifying coins and opportunities -- no coin sits in that band), 4%→2% buys 29h→34h of exposure but drops the real 4% hit rate 93%→85%, and even removing the filter entirely (0%) only reaches one opportunity per 28h while hit rate collapses 81%→40%. So the threshold was not a working lever. A window x threshold matrix then showed the opposite of the intuitive trade-off: widening the golden-cross window improves frequency AND hit rate simultaneously (because the 4h trend and regime filters are still evaluated at the entry bar, so extra bars act as confirmation and screen out immediately-failing breakouts). Also computed distinct opportunity clusters to avoid overstating the gain -- honest numbers are 7→10 independent opportunities per 30 days (not 7→29 hours, most of which is the same opportunity persisting), and 3봉 vs 6봉 give identical opportunity counts (10), so 3 bars is the efficient choice. Flagged that the 86%→80% hit-rate difference rests on 6/7 vs 8/10 samples and is not statistically meaningful. Presented all of this and re-asked.
+**Context**: Requirements Analysis. Evidence-based pushback on the user's first answer before writing any code.
+
+---
+
+## Requirements Analysis - Approved / Code Generation - Unit 2 (analytics-backtest)
+**Timestamp**: 2026-08-10T06:40:00Z
+**User Input**: (AskUserQuestion round 2) "3봉 확대, 임계값 4% 유지 (추천)"
+**AI Response**: Implemented surgically -- left the `golden_cross_event` primitive untouched and added `golden_cross_within(points_1h, i, lookback=GOLDEN_CROSS_LOOKBACK_BARS=3)` in `src/backtest.py`, then switched BOTH entry tests to it: `backtest._composite_signal` (backtest sampling) and `scorer._composite_signal_on_latest_bar` (live check). Keeping the two in step is essential -- samples are measured from the entry bar, so `expected_return` describes the very entry the recommendation offers; changing only one side would make the advertised number describe a different trade. Threshold left at 4% in both places, and documented that the 4% in `backtest.py` (hit_count / target_reached) is the product's success definition and is deliberately distinct from the recommendation filter. Documented the known trade-off rather than silently absorbing it: one crossover can now yield up to 3 overlapping, correlated samples, so `n` counts entry opportunities rather than distinct crossovers (observed live: KRW-KAITO n=7 → n=22); the hit_count/n ratio stays valid but `n` overstates independent evidence. Did not build dedup (not requested). Updated tests: added 4 golden_cross_within boundary tests and 3 live-signal window tests, and rewrote the one test that assumed single-bar sampling to assert the window behaviour explicitly (n=3, mean 2%, hit_count=1). Caught and fixed an off-by-one in my own first draft of the boundary tests (cross at bar 1 with lookback 3 stays valid through bar 3 and expires at bar 4, not bar 3). Full suite: 113/113 passing (up from 106).
+**Verification**: Proved the change actually does something rather than just returning 0 -- on live data, coins passing the golden-cross stage went 0 → 3 (KRW-HOME, KRW-KAITO, RLUSDUSDT), all three then correctly rejected downstream by the 4h trend and 4% filters, confirming the quality gates still work. The n=7→22 inflation appeared exactly as predicted. Current-moment output is still 0 recommendations, which is consistent with the analysis (~72h between opportunities means any single instant is usually empty) and is not a failure. Rebuilt and restarted the running docker container so the live service picks up the change: `docker compose up -d --build` -> container reports (healthy), GET /health and GET /recommendations both correct.
+**Files Modified**: src/backtest.py, src/scorer.py, tests/test_backtest.py, tests/test_scorer.py
+**Context**: Code Generation for the recommendation-frequency tuning request.
+
+---
+
+## New Request - 추천 신뢰도 향상 (질문 2건 + 품질 요구)
+**Timestamp**: 2026-08-10T06:45:00Z
+**User Input**: "Using AI-DLC 신뢰도는 높아져야해. 표본이 많아져서 발생한 케이스야?? 4%랑 3%랑 표본 차이가 심해??"
+**AI Response**: Answered both questions from real data before proposing anything. (Q1) Yes -- the sample growth was almost pure duplication: samples went 78 -> 238 (3.1x) while distinct crossovers went only 78 -> 83 (+6%), with per-coin duplication factors sitting almost exactly on 3.0x. So the previous change's real benefit was exposure time (7h -> 29h), not new opportunities, as originally reported. (Q2) The 4%-vs-3% equivalence is not a sample-size effect but a gap in the distribution: expected returns run 17.01% -> 13.95% -> 5.16% -> 4.69% and then jump straight to 2.77%, so no coin occupies the 3-4% band. Investigation surfaced two genuine defects the user had not asked about: (1) duplicated samples bias `expected_return` itself, because a crossover whose trend/regime held for 3 bars silently receives 3x the weight of one that held for a single bar -- this flipped KRW-ONDO from -0.88% to +2.32%; (2) Binance history was being collected at 1/4.5 of the configured depth -- `binance_client.py`'s `min(limit, _MAX_LIMIT)` silently truncates at Binance's 1000-candle-per-response cap with no pagination, so `backtest_lookback_days: 180` produced 1,007 bars (41 days) while Upbit (paginated internally by pyupbit) held 4,415 bars (184 days). Measured the frequency cost of each reliability option and noted the sequencing point that fixing history first makes a minimum-sample floor cheaper. All analysis ran against sqlite backup-API snapshots so the live container was never disturbed.
+**Context**: Requirements Analysis for the reliability request. Two defects found during diagnosis.
+
+---
+
+## Requirements Analysis - Approved / Code Generation - Unit 1 + Unit 2
+**Timestamp**: 2026-08-10T06:55:00Z
+**User Input**: (AskUserQuestion) "버그 2건 + 최소 교차 3회 (추천)" / "업비트와 동일하게 180일 (추천)"
+**AI Response**: Implemented all three:
+- `src/binance_client.py`: added `get_klines_since()` -- paginates forward from a start time, drops the overlapping candle Binance re-sends at `startTime`, stops on a short page, with a 20-request runaway guard. Left the single-request `get_klines` untouched as the incremental primitive.
+- `src/data_store.py`: added `get_first_candle_time()` -- the backfill decision must key off the EARLIEST stored candle, since the incremental path only moves forward and could never repair an already-truncated market.
+- `src/pipeline.py`: merged `_collect_and_store_binance_candidate` into `_collect_and_store_binance` with a `timeframes` parameter (the two had become near-duplicates and both needed the identical fix, so sharing it avoids applying the same change twice), and added the backfill-or-incremental branch. Documented the accepted cost that coins listed more recently than the lookback window re-fetch their short history each run.
+- `src/backtest.py`: added `_last_cross_bar()` as a dedup key and made `compute_signal_stats` take one sample per crossover; added `MIN_SIGNAL_SAMPLES = 3`. Noted in the docstring why crossovers can never be adjacent (a cross leaves tenkan above kijun, so the next bar fails the `prev.tenkan <= prev.kijun` leg), which is what makes the entry-bar-to-crossover mapping unambiguous.
+- `src/scorer.py`: applied the `n >= MIN_SIGNAL_SAMPLES` evidence floor.
+Tests: added pagination tests (patching `_MAX_LIMIT` small to keep fixtures readable), `get_first_candle_time` tests, backfill-vs-incremental branch tests, a two-distinct-crossovers test proving dedup does not over-collapse, and evidence-floor tests. Rewrote the previous window test, which had asserted n==3, to assert n==1 -- that expectation was correct before dedup and is now exactly what the fix changes. Suite: 123/123 passing (up from 113).
+**Verification**: Ran the real backfill against a COPY of the production DB first: 1,007 bars (41 days) -> 4,320 bars (180 days) for 1h and 1,002 -> 1,080 for 4h, ~0.8s per symbol, and confirmed a second run takes the incremental path (no repeated backfill). Then measured the reliability outcome across all 20 Binance candidates: average distinct crossovers per Binance coin rose 3.5 -> 7.5, and the deeper history exposed false positives that the 41-day window had manufactured -- ZECUSDT flipped from +5.16% (5 crossovers) to -0.67% (15 crossovers) and KRW-WLD fell from +4.69% (1 crossover) to +2.17%. Qualifying coins went 4 -> 2 (EPICUSDT, BANKUSDT), with both removals being genuine false positives rather than lost opportunities. Finally deployed to the live service: `docker compose up -d --build` -> healthy, real `POST /run` completed in 50s including the one-time backfill, and the production DB now holds 4,320 bars for every current candidate plus 1,080 for BTC/ETH.
+**Files Modified**: src/binance_client.py, src/data_store.py, src/pipeline.py, src/backtest.py, src/scorer.py, tests/test_binance_client.py, tests/test_data_store.py, tests/test_pipeline.py, tests/test_backtest.py, tests/test_scorer.py
+**Context**: Code Generation for the reliability request (data-pipeline + analytics-backtest units).
+
+---
+
+## New Request - 진입 가이드 및 24시간 유효기간
+**Timestamp**: 2026-08-10T07:05:00Z
+**User Input**: "Using AI-DLC 하루에 4%, 3% 수익볼 코인 추천하는거라서, 하루 이상을 넘기면 안되 추천대상이. 진입 시점도 가이드에 포함해줘."
+**AI Response**: Confirmed two gaps and found a third defect. (1) No validity window -- `GET /recommendations` calls `get_latest_run()` with no age check, so a stalled scheduler would serve a days-old run as the current recommendation. (2) No entry information anywhere in the API response or the notification. (3) NEW DEFECT: the live signal was being computed on the still-forming candle. Verified against both live exchanges at 07:01:50 -- pyupbit and Binance each returned a 07:00 bar holding roughly two minutes of data, and the code took it as the latest bar. That contradicted BR7's own wording ("가장 최근 마감된 1h 봉") AND `scheduler.py`'s stated purpose ("5 minutes past the hour (waits for the 1h candle to close)") -- the scheduler waited for the bar to close and the code then picked the next, unfinished one. Consequences: a golden cross could appear then vanish once the bar settled (false signals), the backtest sampled only settled bars so train and serve disagreed, and no reproducible entry price existed to publish -- which blocks the requested entry guide outright. Treated as an unambiguous bug (spec violation with no trade-off) rather than a choice.
+**Context**: Requirements Analysis for the entry-guide / expiry request.
+
+---
+
+## Requirements Analysis - 손절가 실측 후 사용자 선택 재확인
+**Timestamp**: 2026-08-10T07:12:00Z
+**User Input**: (AskUserQuestion round 1) "목록을 비우고 사유 표시" / "진입 시각+기준가, 목표가(+4%), 청산 기한(+24시간), 손절가"
+**AI Response**: Implemented everything except the stop-loss, which was measured first rather than assumed -- the backtest has no stop concept, so any number would have been invented. Pooled 184 historical samples: coins that reached +4% had a median drawdown of -1.89% versus -2.74% for those that did not, distributions that overlap almost entirely, so a stop cannot separate winners from losers. Simulating stops at 2/2.5/3/4/5/6% moved the mean return only between 0.24% and 0.46% against a 0.34% baseline -- noise, in a distribution whose worst sample is -56.77% -- while a 2% stop cut 47% of the trades that eventually reached target, because this strategy characteristically dips before running. Reported that the data supports no stop level and offered alternatives; user chose to replace it with the observed drawdown statistic.
+**Context**: Requirements Analysis. Second evidence-based pushback on a user selection this session.
+
+---
+
+## Code Generation - Unit 1 + Unit 2 + Unit 3
+**Timestamp**: 2026-08-10T07:20:00Z
+**User Input**: (AskUserQuestion round 2) "낙폭 통계로 대체 (추천)"
+**AI Response**: Implemented:
+- `src/data_store.py`: added `close_time()` and `drop_unclosed()` (candle_time is the OPEN time on both exchanges, so a bar is usable only once `candle_time + timeframe <= now`); added `entry_time`/`entry_price`/`max_drawdown` columns via the existing ALTER TABLE migration and threaded them through `RecommendationRecord`/`save_run` with `getattr` defaults so duck-typed and legacy callers still work.
+- `src/upbit_client.py`, `src/binance_client.py`: apply `drop_unclosed` at the return boundary, so the unfinished candle never enters the DB and every downstream consumer (signal, backtest, outcome evaluation) automatically sees settled data only.
+- `src/backtest.py`: `SignalStats.max_drawdown` plus an optional `candles_1h` argument to `compute_signal_stats` -- IchimokuPoint carries no low, and raw candles are index-aligned with points so the same `i` addresses both. Optional keeps existing callers and tests valid.
+- `src/scorer.py`: `Recommendation` gained `entry_time`/`entry_price`/`max_drawdown`, sourced from the same bar the backtest measures from.
+- `src/api.py`: entry-guide fields on `RecommendationOut`, with `target_price` and `exit_deadline` DERIVED at response time rather than stored so they cannot drift from the rules; `expired` flag and `_is_expired` keyed off run_time (all recommendations in a run share an hour, and it also covers legacy rows without entry_time); `POST /run` reuses `_to_recommendation_out` instead of its own duplicated construction.
+- `src/notifier.py`: entry guide lines, omitted entirely when entry data is absent rather than fabricated, and the drawdown labelled "손절 지시 아님, 참고용".
+Tests: 4 existing API tests failed after the change because their fixtures used hardcoded 2024 dates and were now correctly expired -- that was the feature working, so they were re-anchored to `now` and dedicated expiry tests added (expired, just-under-the-window boundary, history preserved while current is emptied). Added `drop_unclosed` tests including the exactly-closed boundary and 4h timeframe, drawdown tests, entry-guide persistence round-trip, and a legacy-object test proving `save_run` still accepts recommendations lacking the new attributes. Suite: 136/136 passing (up from 123).
+**Verification**: Confirmed against the live exchanges that the unfinished bar is now excluded (07:16:41 -> latest 1h is 06:00, latest 4h is 00:00, both settled). Deployed and ran the real pipeline (50s, healthy). Because no coin currently has a signal, proved the entry guide end-to-end by replaying a real historical moment through the live code path: a thin store wrapper truncated candles at 2026-08-10T04:00Z (a moment that genuinely had a signal on binance/TUTUSDT) so `generate_recommendations` saw it as "now". Result -- entry 0.22939 at the 04:00 bar close, target 0.238566, deadline 04:00 next day, historical max drawdown -17.33%, with assertions that entry_time is a bar-close time and never in the future. Verified the production DB migration added all three columns.
+**Files Modified**: src/data_store.py, src/upbit_client.py, src/binance_client.py, src/backtest.py, src/scorer.py, src/api.py, src/notifier.py, tests/test_data_store.py, tests/test_backtest.py, tests/test_api.py, tests/test_notifier.py
+**Context**: Code Generation for the entry-guide / expiry request.
+
+---

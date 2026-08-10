@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from hypothesis import given, settings
 
-from src.data_store import Candle, DataStore, RecommendationRecord
+from src.data_store import Candle, DataStore, RecommendationRecord, drop_unclosed
 from tests.generators import candle_list_strategy
 
 
@@ -88,6 +88,46 @@ def test_get_last_candle_time_returns_max(tmp_path):
     assert store.get_last_candle_time("upbit", "KRW-XRP", "1h") == later.candle_time
 
 
+def test_drop_unclosed_removes_the_still_forming_candle():
+    """Both exchanges return the in-progress candle last; using it read a partial bar (BR6)."""
+    now = datetime(2026, 8, 10, 7, 1, tzinfo=timezone.utc)
+    closed = Candle("KRW-XRP", "1h", datetime(2026, 8, 10, 6, tzinfo=timezone.utc), 1, 1, 1, 1, 1)
+    forming = Candle("KRW-XRP", "1h", datetime(2026, 8, 10, 7, tzinfo=timezone.utc), 1, 1, 1, 1, 1)
+
+    assert drop_unclosed([closed, forming], now) == [closed]
+
+
+def test_drop_unclosed_keeps_a_candle_that_closed_exactly_now():
+    now = datetime(2026, 8, 10, 7, tzinfo=timezone.utc)
+    just_closed = Candle("KRW-XRP", "1h", datetime(2026, 8, 10, 6, tzinfo=timezone.utc), 1, 1, 1, 1, 1)
+
+    assert drop_unclosed([just_closed], now) == [just_closed]
+
+
+def test_drop_unclosed_uses_the_candles_own_timeframe():
+    now = datetime(2026, 8, 10, 7, 1, tzinfo=timezone.utc)
+    # a 4h bar opened at 04:00 closes at 08:00 -- still forming at 07:01
+    forming_4h = Candle("BTCUSDT", "4h", datetime(2026, 8, 10, 4, tzinfo=timezone.utc), 1, 1, 1, 1, 1)
+    closed_4h = Candle("BTCUSDT", "4h", datetime(2026, 8, 10, 0, tzinfo=timezone.utc), 1, 1, 1, 1, 1)
+
+    assert drop_unclosed([closed_4h, forming_4h], now) == [closed_4h]
+
+
+def test_get_first_candle_time_returns_none_when_empty(tmp_path):
+    store = make_store(tmp_path)
+    assert store.get_first_candle_time("binance", "SOLUSDT", "1h") is None
+
+
+def test_get_first_candle_time_returns_min(tmp_path):
+    store = make_store(tmp_path)
+    earlier = Candle("SOLUSDT", "1h", datetime(2024, 1, 1, tzinfo=timezone.utc), 1, 1, 1, 1, 1)
+    later = Candle("SOLUSDT", "1h", datetime(2024, 1, 2, tzinfo=timezone.utc), 1, 1, 1, 1, 1)
+
+    store.upsert_candles("binance", "SOLUSDT", "1h", [later, earlier])
+
+    assert store.get_first_candle_time("binance", "SOLUSDT", "1h") == earlier.candle_time
+
+
 def test_get_candles_since_filters_older_candles(tmp_path):
     store = make_store(tmp_path)
     earlier = Candle("KRW-XRP", "1h", datetime(2024, 1, 1, tzinfo=timezone.utc), 1, 1, 1, 1, 1)
@@ -162,6 +202,33 @@ def test_save_run_persists_source_per_recommendation(tmp_path):
     result = store.get_latest_run()
 
     assert {r.market: r.source for r in result.recommendations} == {"KRW-XRP": "upbit", "SOLUSDT": "binance"}
+
+
+def test_save_run_roundtrips_entry_guide_fields(tmp_path):
+    """BR16: the guide must survive persistence, otherwise GET /recommendations cannot show it."""
+    store = make_store(tmp_path)
+    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    entry_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    rec = FakeRecommendation("BANKUSDT", 0.086, 7, 3, source="binance")
+    rec.entry_time, rec.entry_price, rec.max_drawdown = entry_time, 100.0, -0.062
+
+    store.save_run(run_time, True, [rec])
+    stored = store.get_latest_run().recommendations[0]
+
+    assert stored.entry_time == entry_time
+    assert stored.entry_price == 100.0
+    assert stored.max_drawdown == -0.062
+
+
+def test_save_run_accepts_recommendations_without_entry_guide(tmp_path):
+    """Duck-typed callers (and legacy objects) that lack the new attributes must still persist."""
+    store = make_store(tmp_path)
+    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+    store.save_run(run_time, True, [FakeRecommendation("KRW-XRP", 0.05, 3, 1)])
+
+    stored = store.get_latest_run().recommendations[0]
+    assert stored.entry_time is None and stored.entry_price is None and stored.max_drawdown is None
 
 
 def test_save_run_with_zero_recommendations_is_distinguishable_from_never_run(tmp_path):

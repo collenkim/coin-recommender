@@ -10,12 +10,16 @@ RUN_TIME = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 class FakeRecommendation:
-    def __init__(self, market, expected_return, n, hit_count, source="upbit"):
+    def __init__(self, market, expected_return, n, hit_count, source="upbit",
+                 entry_time=None, entry_price=None, max_drawdown=None):
         self.market = market
         self.expected_return = expected_return
         self.n = n
         self.hit_count = hit_count
         self.source = source
+        self.entry_time = entry_time
+        self.entry_price = entry_price
+        self.max_drawdown = max_drawdown
 
 
 def ok_response():
@@ -92,6 +96,34 @@ def test_message_format_includes_exchange_source():
     message = mock_post.call_args.kwargs["json"]["content"]
     assert "[upbit] KRW-XRP" in message
     assert "[binance] SOLUSDT" in message
+
+
+def test_message_includes_entry_guide():
+    entry_time = datetime(2026, 8, 10, 7, tzinfo=UTC)
+    recs = [
+        FakeRecommendation("BANKUSDT", 0.086, 7, 3, source="binance",
+                           entry_time=entry_time, entry_price=100.0, max_drawdown=-0.062)
+    ]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert "진입 100" in message
+    assert "목표 104" in message  # +4%
+    assert "08-11 07:00" in message  # 청산 기한 = 진입 +24h
+    assert "-6.2%" in message
+    assert "손절 지시 아님" in message  # drawdown is context, not an instruction
+
+
+def test_message_omits_entry_guide_when_entry_data_missing():
+    """Legacy rows stored before the entry guide existed must not crash or fabricate values."""
+    recs = [FakeRecommendation("KRW-XRP", 0.051, 3, 2)]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert "KRW-XRP" in message
+    assert "진입" not in message
 
 
 def test_message_format_with_no_recommendations():

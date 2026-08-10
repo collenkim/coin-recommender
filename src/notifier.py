@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 
@@ -8,15 +8,40 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
+_TARGET_RETURN = 0.04
+_HOLD_HOURS = 24
+
+
+def _entry_guide_lines(r) -> list[str]:
+    """BR16: the entry the backtest actually measured, so acting on it matches expected_return."""
+    entry_price = getattr(r, "entry_price", None)
+    entry_time = getattr(r, "entry_time", None)
+    if entry_price is None or entry_time is None:
+        return []
+    deadline = entry_time + timedelta(hours=_HOLD_HOURS)
+    lines = [
+        f"    진입 {entry_price:,.4g} ({entry_time.strftime('%m-%d %H:%M')} UTC 종가 기준)"
+        f" → 목표 {entry_price * (1 + _TARGET_RETURN):,.4g} (+{_TARGET_RETURN:.0%})",
+        f"    청산 기한 {deadline.strftime('%m-%d %H:%M')} UTC (진입 +{_HOLD_HOURS}시간)",
+    ]
+    max_drawdown = getattr(r, "max_drawdown", None)
+    if max_drawdown is not None:
+        lines.append(f"    과거 동일 신호 최대 낙폭 {max_drawdown:.1%} (손절 지시 아님, 참고용)")
+    return lines
+
+
 def _format_message(run_time: datetime, recommendations: list) -> str:
     """BR5: Korean notification message format."""
     header = f"[coin-recommender] {run_time.isoformat()} 추천 결과"
     if not recommendations:
         return f"{header}\n\n이번 회차 추천 없음"
-    lines = [
-        f"- [{getattr(r, 'source', 'upbit')}] {r.market}: 기대수익률 {r.expected_return:.1%} (과거 {r.n}회 중 {r.hit_count}회 적중)"
-        for r in recommendations
-    ]
+    lines = []
+    for r in recommendations:
+        lines.append(
+            f"- [{getattr(r, 'source', 'upbit')}] {r.market}: 기대수익률 {r.expected_return:.1%}"
+            f" (과거 {r.n}회 중 {r.hit_count}회 적중)"
+        )
+        lines.extend(_entry_guide_lines(r))
     return header + "\n\n" + "\n".join(lines)
 
 

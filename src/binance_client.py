@@ -4,7 +4,7 @@ from typing import Callable, TypeVar
 
 import requests
 
-from src.data_store import Candle, TickerInfo
+from src.data_store import Candle, TickerInfo, drop_unclosed
 
 _BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 _BINANCE_TICKER_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
@@ -56,7 +56,7 @@ class BinanceClient:
 
         raw = _retry_with_backoff(fetch, max_attempts=self._max_retries)
 
-        return [
+        candles = [
             Candle(
                 market=symbol,
                 timeframe=interval,
@@ -69,6 +69,34 @@ class BinanceClient:
             )
             for item in raw
         ]
+        return drop_unclosed(candles)
+
+    def get_klines_since(self, symbol: str, interval: str, start_time: datetime, max_requests: int = 20) -> list[Candle]:
+        """Paginated history fetch from `start_time` to now.
+
+        Binance returns at most _MAX_LIMIT candles per response, and `get_klines` clamps to that
+        silently -- which is why stored Binance history sat at ~1000 bars (41 days of 1h) even
+        though backtest_lookback_days was 180. This walks forward until the exchange stops
+        returning new candles, so the configured lookback is actually honoured.
+
+        `max_requests` is a runaway guard: 20 requests covers 20,000 candles, far beyond the ~4,300
+        that 180 days of 1h bars needs.
+        """
+        collected: list[Candle] = []
+        cursor = start_time
+        for _ in range(max_requests):
+            raw = self.get_klines(symbol, interval, start_time=cursor, limit=_MAX_LIMIT)
+            if not raw:
+                break
+            # Binance includes the candle at `startTime`, so drop anything we already hold.
+            fresh = [c for c in raw if not collected or c.candle_time > collected[-1].candle_time]
+            if not fresh:
+                break
+            collected.extend(fresh)
+            if len(raw) < _MAX_LIMIT:
+                break  # short page -- the exchange has nothing more
+            cursor = collected[-1].candle_time
+        return collected
 
     def get_tickers_by_volume(self) -> list[TickerInfo]:
         """24h ticker stats for every symbol on the exchange (public endpoint, no market-list lookup
