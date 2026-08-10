@@ -684,3 +684,17 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation for the entry-guide / expiry request.
 
 ---
+
+## Requirements Analysis + Code Generation - 백테스트 이력 1년 확대
+**Timestamp**: 2026-08-11T07:55:00Z
+**User Input**: "Using AI-DLC 180일 데이터 보다 더 많이 1년치 데이터 기준으로 처리될 수 있도록 변경해줘. 그리고 1년치 데이터는 저장하는거지?? 그래야 매번 호출 안하니까"
+**AI Response**: 저장 여부 질문에 먼저 답하고(저장한다 — SQLite `data/coin_recommender.db` 33MB, 이력이 lookback 깊이에 도달한 마켓은 실행당 타임프레임당 1건의 증분 요청만), 설정값 변경만으로는 요구가 충족되지 않는다는 사실을 발견해 함께 수정했습니다. `_collect_and_store`(업비트)는 부트스트랩 여부를 `get_last_candle_time is None`(DB가 비었는가)으로만 판정하므로, 이미 180일치가 저장된 마켓은 증분 경로에 갇히고 증분은 앞으로만 진행합니다 — 즉 `backtest_lookback_days`만 365로 올리면 변경이 **바이낸스에만** 적용되고 업비트는 영원히 180일에 머무릅니다(2026-08-10에 고친 바이낸스 BR10과 동일한 구조적 결함이 업비트 쪽에 남아 있었음).
+**Files Modified**:
+- `config/settings.yaml`, `src/config.py`: `backtest_lookback_days` 180 → 365 (두 곳을 함께 — 어긋나면 컨테이너와 로컬 동작이 갈림)
+- `src/pipeline.py`: `_bars_between()` 헬퍼 + `_collect_and_store`에 소급 백필 분기 추가. 바이낸스(BR10)와 달리 백필 범위를 **비어 있는 과거 구간만**(`to=first_time`)으로 한정 — 업비트는 요청당 200봉(바이낸스 1,000봉)이라 전체 재수집 비용이 5배이고, 상장이 lookback보다 최근인 코인은 이 분기를 매 실행 타므로(BR10의 "알려진 비용") lookback이 1년이 되면 해당 코인 수가 크게 늘어납니다. 과거 구간만 요청하면 그 상시 비용이 타임프레임당 1건으로 묶입니다
+- `src/binance_client.py`: 폭주 방지 상한(20요청=20,000봉) 설명을 365일 기준(~8,760봉)으로 갱신
+- `tests/test_pipeline.py`: 부트스트랩 전체 lookback 요청 / 얕은 이력 시 과거 구간 백필 / 이력 충분 시 증분만 — 3건 추가. 기존 실패 격리 테스트에 `get_first_candle_time` 스텁 보강
+**Verification**: 운영 DB **사본**에 실제 업비트/바이낸스 API를 호출해 검증(운영 DB는 미변경). KRW-ADA 1시간봉 4,327→8,752봉(365일 도달), 4시간봉 1,081→2,190봉. 백필 1회 비용 30요청/4.4초, **재실행 시 2요청**으로 복귀 — 사용자 요구("매번 호출 안하니까") 충족 확인. 상장 1년 미만인 KRW-BLEND는 매 실행 4요청으로 제한(전체 재수집 설계였다면 26요청). 추가로 발견/검증한 의존성: 백테스트 표본은 BTC/ETH 4시간봉 레짐을 통과해야 채택되고 `as_of`는 기준 종목 이력 이전 시점에 None을 돌려주므로, 레짐 종목이 180일에 머무르면 새 이력이 **전부 기각**됩니다 — BTC/ETH를 365일로 백필하자 KRW-ADA 표본이 n=2 → n=13으로 실제 증가. 성능 실측 8,752봉 기준 코인당 0.60초(이치모쿠 0.56 + 스캔 0.04), 40개 코인 환산 24초로 매시 창 내. 테스트 139/139 통과(136에서 +3)
+**Context**: Code Generation. 배포는 미수행 — 다음 파이프라인 실행 시 자동 백필되며 최초 1회만 약 2분 추가 소요.
+
+---

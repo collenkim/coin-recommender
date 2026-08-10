@@ -79,8 +79,8 @@ class BinanceClient:
         though backtest_lookback_days was 180. This walks forward until the exchange stops
         returning new candles, so the configured lookback is actually honoured.
 
-        `max_requests` is a runaway guard: 20 requests covers 20,000 candles, far beyond the ~4,300
-        that 180 days of 1h bars needs.
+        `max_requests` is a runaway guard: 20 requests covers 20,000 candles, comfortably past the
+        ~8,760 that 365 days of 1h bars needs.
         """
         collected: list[Candle] = []
         cursor = start_time

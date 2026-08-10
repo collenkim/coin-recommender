@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.config import settings
 from src.pipeline import AlreadyRunningError, _lock, evaluate_pending_outcomes, run_recommendation_pipeline
 
 
@@ -106,6 +107,7 @@ def test_recommendations_capped_per_exchange():
 
 def test_data_collection_failure_for_one_market_does_not_abort_pipeline():
     mock_store = MagicMock()
+    mock_store.get_first_candle_time.return_value = None
     mock_store.get_last_candle_time.return_value = None
     mock_upbit = MagicMock()
     mock_upbit.get_ohlcv.side_effect = RuntimeError("network error")
@@ -116,6 +118,55 @@ def test_data_collection_failure_for_one_market_does_not_abort_pipeline():
     _collect_and_store(mock_store, mock_upbit, "KRW-XRP")
 
     mock_store.upsert_candles.assert_not_called()
+
+
+def test_upbit_bootstrap_requests_the_full_configured_lookback():
+    mock_store = MagicMock()
+    mock_store.get_first_candle_time.return_value = None
+    mock_upbit = MagicMock()
+    mock_upbit.get_ohlcv.return_value = []
+
+    from src.pipeline import _collect_and_store
+
+    _collect_and_store(mock_store, mock_upbit, "KRW-XRP")
+
+    counts = {call.args[1]: call.kwargs["count"] for call in mock_upbit.get_ohlcv.call_args_list}
+    assert counts["1h"] >= settings.backtest_lookback_days * 24
+    assert counts["4h"] >= settings.backtest_lookback_days * 24 // 4
+
+
+def test_upbit_collection_backfills_the_older_gap_when_history_is_shallower_than_lookback():
+    """Without this the incremental path (forward only) would leave markets bootstrapped under an
+    older, shorter lookback at their old depth forever -- mirrors the Binance backfill (BR9)."""
+    first_time = datetime.now(timezone.utc) - timedelta(days=10)
+    mock_store = MagicMock()
+    mock_store.get_first_candle_time.return_value = first_time
+    mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(hours=2)
+    mock_upbit = MagicMock()
+    mock_upbit.get_ohlcv.return_value = []
+
+    from src.pipeline import _collect_and_store
+
+    _collect_and_store(mock_store, mock_upbit, "KRW-XRP")
+
+    backfill_calls = [call for call in mock_upbit.get_ohlcv.call_args_list if call.kwargs.get("to") == first_time]
+    assert len(backfill_calls) == 2  # one per timeframe, reaching back from the earliest stored candle
+    # Only the missing older span is requested, not the whole window again (Upbit pages 200 at a time)
+    assert backfill_calls[0].kwargs["count"] < settings.backtest_lookback_days * 24
+
+
+def test_upbit_collection_skips_backfill_once_history_is_deep_enough():
+    mock_store = MagicMock()
+    mock_store.get_first_candle_time.return_value = datetime.now(timezone.utc) - timedelta(days=999)
+    mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(hours=2)
+    mock_upbit = MagicMock()
+    mock_upbit.get_ohlcv.return_value = []
+
+    from src.pipeline import _collect_and_store
+
+    _collect_and_store(mock_store, mock_upbit, "KRW-XRP")
+
+    assert [call.kwargs["count"] for call in mock_upbit.get_ohlcv.call_args_list] == [200, 200]
 
 
 def test_binance_candidate_collection_failure_for_one_timeframe_does_not_abort_pipeline():

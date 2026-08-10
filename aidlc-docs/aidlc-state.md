@@ -88,8 +88,16 @@
 - [x] Verified live: 거래소 실호출로 미완성 봉 제외 확인(07:16 기준 최신 1h=06:00, 4h=00:00 모두 마감분). 현재 시그널이 없어, 실제 시그널이 있었던 과거 시점(2026-08-10T04:00Z, binance/TUTUSDT)으로 되감아 실전 코드 경로 통과 검증 — 진입 0.22939 @ 04:00 봉 마감, 목표 0.238566, 청산기한 +24h, 낙폭 -17.33%. 운영 DB 마이그레이션 3개 컬럼 확인
 - [ ] **문서화된 주의사항**: `expected_return`은 손절 없이 24시간 보유 기준 값 — 사용자가 임의 손절을 걸면 이 숫자와 달라짐
 
+### 🔁 Follow-up Request (2026-08-11): 백테스트 이력 1년(365일) 확대
+- [x] 조사 — 사용자 질문("1년치 저장하는거지?")에 대한 답: **저장한다**(SQLite `data/coin_recommender.db`, 이력이 충분한 마켓은 실행당 타임프레임당 1건의 증분 요청만). 단 **설정값만 365로 바꾸면 업비트에는 적용되지 않음**을 발견 — `_collect_and_store`가 부트스트랩을 "DB가 비었는가"로만 판정해 기존 마켓은 증분(전진 전용) 경로에 갇힘. 바이낸스는 BR10 백필이 이미 있어 자동 확대
+- [x] Requirements Analysis (Minimal depth — FR-Y1~FR-Y3, `aidlc-docs/inception/requirements/requirements.md`에 추가)
+- [x] Functional Design — Unit 1 data-pipeline BR11 신설(업비트 소급 백필), BR3/BR4 갱신. Unit 2는 설정값 확대 효과만 받으므로 설계 변경 없음
+- [x] Code Generation — `config/settings.yaml`+`src/config.py` 180→365, `src/pipeline.py` `_bars_between()`/업비트 백필 분기, `src/binance_client.py` 폭주 상한 주석 갱신. 테스트 3개 추가, 139/139 통과
+- [x] Verified live (운영 DB 사본 + 실제 거래소 호출): KRW-ADA 4,327→8,752봉(365일), BTC/ETH 4시간봉 1,080→2,189봉. 백필 1회 30요청/4.4초 후 정상 상태 2요청으로 복귀(= 매번 재호출 없음). 상장 1년 미만 코인(KRW-BLEND)은 매 실행 4요청으로 제한(전체 재수집이었다면 26요청). 레짐 종목까지 깊어진 뒤 KRW-ADA 표본 n=2→13, 스캔 성능 40개 코인 환산 24초
+- [ ] **미배포**: 코드 변경만 완료. 다음 파이프라인 실행 시 자동으로 백필이 시작되며, 최초 1회는 실행 시간이 약 2분 늘어남
+
 ## Current Status
 - **Lifecycle Phase**: COMPLETE (base project) + 6 follow-up features delivered (Docker Compose infra; 추천 결과 적중 판별; 바이낸스/업비트 거래소별 추천 5개씩 포함; 추천 발생 빈도 개선; 추천 신뢰도 향상; 진입 가이드 및 24시간 유효기간)
-- **Current Stage**: 진입 가이드 + 만료 처리 완료 및 라이브 반영 (2026-08-10). Operations remains a placeholder with no defined steps (per core-workflow.md)
+- **Current Stage**: 백테스트 이력 365일 확대 코드 완료, 배포 대기 (2026-08-11). Operations remains a placeholder with no defined steps (per core-workflow.md)
 - **Next Stage**: None — all delivered work approved. Future work would re-enter as a new AI-DLC request (e.g. "Using AI-DLC, add X")
 - **Status**: Done

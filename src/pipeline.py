@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from src.backtest import evaluate_outcome
 from src.binance_client import BinanceClient
 from src.config import settings
-from src.data_store import DataStore
+from src.data_store import TIMEFRAME_HOURS, DataStore
 from src.market_selector import BinanceMarketSelector, MarketSelector
 from src.notifier import send_notification
 from src.scorer import BTC_MARKET, ETH_MARKET, check_market_regime, generate_recommendations
@@ -30,18 +30,42 @@ class PipelineRunResult:
     recommendations: list
 
 
+def _bars_between(timeframe: str, start: datetime, end: datetime) -> int:
+    """Candle count covering [start, end] on `timeframe`, floored at bootstrap_min_candles so a
+    market with almost no gap still gets a usable minimum of history."""
+    span_bars = int((end - start).total_seconds() // 3600 // TIMEFRAME_HOURS[timeframe]) + 1
+    return max(settings.bootstrap_min_candles, span_bars)
+
+
 def _collect_and_store(data_store: DataStore, upbit_client: UpbitClient, market: str) -> None:
     """BR1 step 2 / Unit 1 business-rules.md BR2/BR3/BR4/BR7: bootstrap-or-incremental per (market,
-    timeframe), isolated failure per market (graceful degradation)."""
+    timeframe), isolated failure per market (graceful degradation).
+
+    The backfill leg mirrors _collect_and_store_binance (BR9) and exists for the same reason:
+    the incremental path only ever moves forward, so a market bootstrapped under a shorter
+    `backtest_lookback_days` would keep its old depth forever and a raised lookback would silently
+    apply to Binance only.
+
+    Unlike Binance, the backfill asks for the *missing older span only* (`to=first_time`) instead of
+    re-fetching the whole window. Upbit pages 200 candles at a time (Binance does 1000), and a coin
+    listed after `target_start` can never satisfy `first <= target_start`, so it takes this branch on
+    every run -- fetching only the gap keeps that permanent cost at one request instead of dozens.
+    """
+    now = datetime.now(timezone.utc)
+    target_start = now - timedelta(days=settings.backtest_lookback_days)
     for timeframe in ("1h", "4h"):
         try:
-            last_time = data_store.get_last_candle_time("upbit", market, timeframe)
-            if last_time is None:
-                count = max(settings.bootstrap_min_candles, settings.backtest_lookback_days * 24 // (1 if timeframe == "1h" else 4))
-                candles = upbit_client.get_ohlcv(market, timeframe, count=count)
+            first_time = data_store.get_first_candle_time("upbit", market, timeframe)
+            if first_time is None:
+                candles = upbit_client.get_ohlcv(market, timeframe, count=_bars_between(timeframe, target_start, now))
             else:
+                last_time = data_store.get_last_candle_time("upbit", market, timeframe)
                 candles = upbit_client.get_ohlcv(market, timeframe, count=200, to=None)
                 candles = [c for c in candles if c.candle_time > last_time]
+                if first_time > target_start:
+                    candles += upbit_client.get_ohlcv(
+                        market, timeframe, count=_bars_between(timeframe, target_start, first_time), to=first_time
+                    )
             data_store.upsert_candles("upbit", market, timeframe, candles)
         except Exception:
             logger.warning("Failed to collect %s %s; skipping this market/timeframe this run", market, timeframe, exc_info=True)

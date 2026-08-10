@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     top_n_candidates: int = 20
     recommendations_per_exchange: int = 5
     bootstrap_min_candles: int = 100
-    backtest_lookback_days: int = 180
+    backtest_lookback_days: int = 365
     http_timeout_seconds: float = 10.0
     http_max_retries: int = 3
     upbit_request_delay_seconds: float = 0.1

@@ -15,7 +15,7 @@
 IF DataStore.get_last_candle_time(source, market, timeframe) is None:
     # 최초 실행 — 부트스트랩
     지표용: 최소 100봉 수집
-    백테스트용: backtest_lookback_days(기본 180일)에 해당하는 캔들 추가 수집
+    백테스트용: backtest_lookback_days(기본 365일)에 해당하는 캔들 추가 수집
     (두 수집 모두 같은 upsert 대상이므로 겹치는 구간은 자연히 중복 제거됨)
     IF 수집된 캔들 수 < 100:
         해당 (market, timeframe)은 이번 회차 후보에서 제외 (CollectionResult.status = "skipped_insufficient_history")
