@@ -772,3 +772,20 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation. 표시 계층만 변경이라 DB 마이그레이션·API 스키마 변경 없음.
 
 ---
+
+## Code Generation - 추천 하한 45% 및 스테이블/금 토큰 제외
+**Timestamp**: 2026-08-11T06:55:00Z
+**User Input**: "매 시간 알림이 가도록은 설정유지할꺼야. 도달 확률 45% 이상인 것만 추려내주고, 거래량 상위 20개 중에 고르는 로직이 맞아?" / "스테이블이랑 금토큰은 제외하고 뽑아줘"
+**AI Response**:
+1. `MIN_HIT_RATE` 0.40 -> 0.45. 5년 표본 영향: 통과 코인 11개 -> 8개(탈락 NEARUSDT 43.5%, BICOUSDT 43.1%, TUTUSDT 42.9%). 0건 회차 알림 스킵은 사용자가 유지를 선택해 변경하지 않음.
+2. 후보 선정 로직 검증 결과 **의도대로 동작하나 구멍 발견** — 스테이블 제외가 하드코딩 이름 목록이라 신규 페그 자산이 통과. 실측상 상위 20개 중 6개(30%)가 추천 후보가 될 수 없는 종목이었음: 스테이블/금 4종(USD1, RLUSD, XAUT, PAXG) + 이력 부족 4종(SPCXB, SNDKB, RLUSD, PAXG, 중복 제외 시 합계 6종).
+**자체 정정**: 처음에는 24시간 변동폭 하한으로 자동 배제하는 방안(A)을 추천했으나, 실측 결과 **금 토큰이 정상 알트보다 더 움직여 분리 불가**임을 확인하고 철회했습니다 — XAUT 2.53% / PAXG 2.65% vs TRX 0.63% / DOGE 1.38% / BNB 1.55% / SOL 2.30%. 금이 걸리는 임계값은 메이저 알트를 함께 지웁니다. 명시 목록(B)이 맞는 선택이었고 그렇게 구현했습니다.
+**Files Modified**:
+- `src/backtest.py`: `MIN_HIT_RATE` 0.45
+- `src/market_selector.py`: `_BINANCE_STABLECOIN_BASES`에 USD1/RLUSD/U/XUSD/EURI 추가(전부 현재가 ~1.00, 24시간 변동폭 0.02~0.29%로 페그 확인), `_BINANCE_COMMODITY_BASES = {XAUT, PAXG}` 신설. 변동성 방식을 쓰지 않은 이유를 docstring에 근거 수치와 함께 기록
+- `tests/test_market_selector.py`: 신규 페그 자산 5종 제외, 금 토큰 제외, **조용한 날의 메이저(TRX/DOGE/BNB)를 지우지 않는다는 회귀 방지** 3건 추가
+**Verification**: 테스트 148/148 통과(145에서 +3). 라이브 후보 재산출 결과 USD1/RLUSD/XAUT/PAXG가 모두 빠지고 그 자리를 DOGEUSDT, NEARUSDT, ADAUSDT, LINKUSDT가 채움 — 5년 표본에서 ADAUSDT 52.9%, DOGEUSDT 48.6%로 45% 하한을 통과하는 종목들입니다.
+**알려진 유지보수 비용**: 이름 목록 방식이라 신규 페그 자산이 상위권에 올라오면 목록 갱신이 필요합니다. docstring에 명시했습니다.
+**Context**: Code Generation.
+
+---
