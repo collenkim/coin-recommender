@@ -137,8 +137,8 @@ def test_message_format_includes_exchange_source():
         send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook")
 
     message = mock_post.call_args.kwargs["json"]["content"]
-    assert "[upbit] KRW-XRP" in message
-    assert "[binance] SOLUSDT" in message
+    assert "(1) KRW-XRP · upbit" in message
+    assert "(2) SOLUSDT · binance" in message
 
 
 def test_message_includes_entry_guide():
@@ -151,11 +151,12 @@ def test_message_includes_entry_guide():
         send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook")
 
     message = mock_post.call_args.kwargs["json"]["content"]
-    assert "진입 100" in message
-    assert "매도 103" in message  # +3%
-    assert "손절 98" in message  # -2%
-    assert "08-11 07:00" in message  # 청산 기한 = 진입 +24h
-    assert "08-10 07:00" in message  # 진입 기준 봉 마감 시각
+    assert "진입가: 100" in message
+    assert "매도가: 103" in message  # +3%
+    assert "손절가: 98" in message  # -2%
+    # 알림은 KST 표기 (진입 07:00 UTC = 16:00 KST), 청산 기한은 진입 +24h
+    assert "08-10 16:00 KST" in message
+    assert "08-11 16:00 KST" in message
 
 
 def test_message_omits_entry_guide_when_entry_data_missing():
@@ -174,4 +175,39 @@ def test_message_format_with_no_recommendations():
         send_notification([], RUN_TIME, None, None, "https://discord.example/webhook")
 
     message = mock_post.call_args.kwargs["json"]["content"]
+    assert "이번 회차 추천 없음" in message
+
+
+def test_header_reports_the_recommendation_count_and_kst_run_time():
+    recs = [
+        FakeRecommendation("AAAUSDT", 0.01, 5, 3, source="binance"),
+        FakeRecommendation("BBBUSDT", 0.01, 5, 3, source="binance"),
+    ]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert message.startswith("[coin-recommender] 추천 코인 2개")
+    assert "2024-01-01 09:00 KST" in message  # RUN_TIME 00:00 UTC = 09:00 KST
+    assert "UTC" not in message
+
+
+def test_each_recommendation_is_its_own_numbered_paragraph():
+    recs = [FakeRecommendation(f"SYM{i}USDT", 0.01, 5, 3, source="binance") for i in range(3)]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    body = message.split("\n\n", 1)[1]
+    assert len(body.split("\n\n")) == 3  # 종목마다 빈 줄로 분리된 한 단락
+    for order in (1, 2, 3):
+        assert f"({order}) SYM{order - 1}USDT" in message
+
+
+def test_zero_recommendations_still_reports_a_count():
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification([], RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert "추천 코인 0개" in message
     assert "이번 회차 추천 없음" in message

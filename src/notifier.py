@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -11,6 +11,13 @@ _TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
 _HOLD_HOURS = 24
+# 알림은 사람이 읽는 화면이므로 한국 시간으로 표기한다. 저장·API는 UTC를 유지한다 --
+# 표시 형식과 저장 형식을 같이 바꾸면 과거 데이터 해석이 어긋난다.
+_KST = timezone(timedelta(hours=9))
+
+
+def _kst(moment: datetime, fmt: str = "%m-%d %H:%M") -> str:
+    return moment.astimezone(_KST).strftime(fmt)
 
 
 def _entry_guide_lines(r) -> list[str]:
@@ -22,30 +29,37 @@ def _entry_guide_lines(r) -> list[str]:
         return []
     deadline = entry_time + timedelta(hours=_HOLD_HOURS)
     return [
-        f"    진입 {entry_price:,.6g} ({entry_time.strftime('%m-%d %H:%M')} UTC 종가 기준)",
-        f"    매도 {entry_price * (1 + TARGET_RETURN):,.6g} (+{TARGET_RETURN:.0%})"
-        f"  /  손절 {entry_price * (1 - STOP_LOSS):,.6g} (-{STOP_LOSS:.0%})",
-        f"    청산 기한 {deadline.strftime('%m-%d %H:%M')} UTC (진입 +{_HOLD_HOURS}시간)",
+        f"· 진입가: {entry_price:,.6g}  ({_kst(entry_time)} KST 봉 마감 기준)",
+        f"· 매도가: {entry_price * (1 + TARGET_RETURN):,.6g}  (+{TARGET_RETURN:.0%})",
+        f"· 손절가: {entry_price * (1 - STOP_LOSS):,.6g}  (-{STOP_LOSS:.0%})",
+        f"· 청산 기한: {_kst(deadline)} KST  (진입 +{_HOLD_HOURS}시간)",
     ]
 
 
+def _recommendation_block(order: int, r) -> str:
+    """추천 1건 = 한 단락. 번호를 붙여 몇 번째 종목인지 바로 보이게 한다."""
+    hit_rate = getattr(r, "hit_rate", None)
+    if hit_rate is None and r.n:
+        hit_rate = r.hit_count / r.n
+    rate_text = "-" if hit_rate is None else f"{hit_rate:.0%}"
+    lines = [
+        f"({order}) {r.market} · {getattr(r, 'source', 'binance')}",
+        f"· 24시간 내 +{TARGET_RETURN:.0%} 도달 확률: {rate_text}"
+        f"  (과거 {r.n}회 중 {r.hit_count}회, 손절 -{STOP_LOSS:.0%} 적용 기준)",
+    ]
+    lines.extend(_entry_guide_lines(r))
+    return "\n".join(lines)
+
+
 def _format_message(run_time: datetime, recommendations: list) -> str:
-    """BR5: Korean notification message format."""
-    header = f"[coin-recommender] {run_time.isoformat()} 추천 결과"
+    """BR5: Korean notification message format. 상단에 추천 개수, 종목마다 번호 붙인 단락."""
+    stamp = f"{_kst(run_time, '%Y-%m-%d %H:%M')} KST"
     if not recommendations:
-        return f"{header}\n\n이번 회차 추천 없음"
-    lines = []
-    for r in recommendations:
-        hit_rate = getattr(r, "hit_rate", None)
-        if hit_rate is None and r.n:
-            hit_rate = r.hit_count / r.n
-        rate_text = "-" if hit_rate is None else f"{hit_rate:.0%}"
-        lines.append(
-            f"- [{getattr(r, 'source', 'binance')}] {r.market}: 24시간 내 목표 도달 확률 {rate_text}"
-            f" (과거 {r.n}회 중 {r.hit_count}회, 손절 -{STOP_LOSS:.0%} 적용 기준)"
-        )
-        lines.extend(_entry_guide_lines(r))
-    return header + "\n\n" + "\n".join(lines)
+        return f"[coin-recommender] 추천 코인 0개\n{stamp}\n\n이번 회차 추천 없음"
+
+    header = f"[coin-recommender] 추천 코인 {len(recommendations)}개\n{stamp}"
+    blocks = [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
+    return header + "\n\n" + "\n\n".join(blocks)
 
 
 def send_notification(

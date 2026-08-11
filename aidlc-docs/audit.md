@@ -758,3 +758,17 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation. `SLACK_WEBHOOK_URL`을 비워두면 슬랙으로는 보내지 않으며(에러 아님) 기존 채널 동작에는 영향 없음.
 
 ---
+
+## Code Generation - 알림 형식 개선 (KST 표기 / 단락 분리 / 개수 표기)
+**Timestamp**: 2026-08-11T06:40:00Z
+**User Input**: "추천 결과에는 UTC 시간 말고 한국 시간으로 설정해주고, 추천 코인에 대한 결과도 단락 잘나눠서 정리해줘. 그리고 추천 코인 수도 상단에 표기해주고 (1) 이런식으로"
+**AI Response**: 알림 메시지 형식만 변경했습니다.
+- **KST 표기**: 실행 시각/진입 시각/청산 기한을 모두 `astimezone(KST)`로 변환. **저장(DB)과 API 응답은 UTC ISO 유지** -- 표시 형식과 저장 형식을 같이 바꾸면 과거 데이터 해석이 어긋나고, API는 오프셋이 붙은 ISO라 클라이언트가 자체 로케일로 렌더링하는 게 맞습니다.
+- **단락 분리**: 추천 1건 = 빈 줄로 구분된 한 단락(`_recommendation_block`). 항목마다 `·` 불릿으로 확률/진입가/매도가/손절가/청산기한을 한 줄씩.
+- **개수 및 번호**: 헤더에 `추천 코인 N개`, 각 종목 앞에 `(1)`, `(2)`. 0건일 때도 `추천 코인 0개`로 개수를 명시.
+- 정렬용 공백에 의존하지 않는 형식으로 잡았습니다 -- 슬랙은 기본이 가변폭 글꼴이라 열 맞춤이 깨지고, 코드블록(```)으로 감싸면 Telegram이 parse_mode 없이 백틱을 그대로 노출합니다.
+**Files Modified**: `src/notifier.py`(`_kst` 헬퍼, `_recommendation_block` 신설, `_format_message` 재작성), `tests/test_notifier.py`(기대값 KST/신형식으로 갱신 + 헤더 개수·KST 표기, 종목별 단락 분리, 0건 개수 표기 3건 추가)
+**Verification**: 테스트 145/145 통과(142에서 +3). 실제 슬랙 워크스페이스로 추천 2건 예시를 발송해 렌더링 확인.
+**Context**: Code Generation. 표시 계층만 변경이라 DB 마이그레이션·API 스키마 변경 없음.
+
+---
