@@ -260,3 +260,17 @@ def test_evaluate_outcome_returns_none_until_the_window_closes():
 def test_evaluate_outcome_returns_none_when_no_candle_precedes_the_run():
     candles = _forward(100.0, [FLAT] * 24)
     assert evaluate_outcome("TESTUSDT", T0 - timedelta(hours=5), candles, datetime(2024, 6, 1, tzinfo=UTC)) is None
+
+
+def test_regime_is_stamped_at_bar_close_not_bar_open():
+    """룩어헤드 회귀 방지: candle_time은 시가 시각이라 그대로 쓰면 08:00봉의 레짐이 09:00에도
+    조회된다 -- 그 봉은 12:00에야 마감되므로 아직 모르는 종가를 쓰는 셈이 된다."""
+    closes = [100.0] + [100.0 + i * 0.2 for i in range(REGIME_BARS_30D)]
+    candles = _btc_series(closes)
+    series = build_regime_series(candles)
+
+    last_open = candles[-1].candle_time
+    assert series[-1][0] == last_open + timedelta(hours=4)
+    # 봉이 마감되기 전에는 그 봉의 레짐을 볼 수 없다
+    assert regime_as_of(series, last_open + timedelta(hours=1)) != STRONG_BULL
+    assert regime_as_of(series, last_open + timedelta(hours=4)) == STRONG_BULL

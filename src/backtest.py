@@ -2,7 +2,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from src.data_store import Candle
+from src.data_store import Candle, close_time
 from src.features import IchimokuPoint
 
 # --- 매매 규칙 (BR18) ---
@@ -28,9 +28,9 @@ REBOUND = "rebound"
 
 # --- 추천 하한 (BR21) ---
 MIN_SIGNAL_SAMPLES = 3
-# 손절 -2%를 적용했을 때 강한상승 레짐의 실측 목표달성률이 40.7%이므로, 45%는 레짐 평균을
-# 웃도는 코인만 남기는 기준이다(사용자 지정). 표본이 얇은 코인이 이 문턱을 우연히 넘을 수 있어
-# 정렬은 여전히 Wilson 하한으로 한다.
+# 손절 -2% 적용 시 실측 목표달성률은 전체 38.7%(룩어헤드 수정 후, 5년 876매매), 강한상승
+# 레짐만 보면 그보다 높다. 45%는 그 평균을 웃도는 코인만 남기는 기준이다(사용자 지정).
+# 표본이 얇은 코인이 이 문턱을 우연히 넘을 수 있어 정렬은 여전히 Wilson 하한으로 한다.
 MIN_HIT_RATE = 0.45
 
 
@@ -74,25 +74,29 @@ def wilson_lower(hits: int, n: int, z: float = 1.96) -> float:
 
 
 def build_regime_series(btc_candles_4h: list[Candle]) -> list[tuple[datetime, str | None]]:
-    """BR20: 각 4시간봉 시점의 레짐. 30일 이력이 쌓이기 전 구간은 None(진입 금지)이다.
+    """BR20: 각 4시간봉의 레짐을, 그 봉이 **마감된 시각**에 붙여 돌려준다.
+
+    `candle_time`은 시가 시각이므로 그대로 쓰면 08:00봉의 레짐이 09:00 시점에도 조회된다 --
+    그 봉은 12:00에야 마감되므로 아직 모르는 종가를 쓰는 룩어헤드가 된다. 라이브는 마감된 봉만
+    저장해 영향이 없지만 백테스트만 낙관적으로 나오는 train/serve 불일치가 생긴다.
 
     라이브와 백테스트가 같은 함수를 쓰므로 두 경로가 어긋날 수 없다 -- 이 코드베이스에서
     반복적으로 문제가 됐던 지점이라 의도적으로 하나로 둔다."""
     series: list[tuple[datetime, str | None]] = []
     for i, candle in enumerate(btc_candles_4h):
         if i < REGIME_BARS_30D:
-            series.append((candle.candle_time, None))
+            series.append((close_time(candle), None))
             continue
         close = candle.close
         ret_30d = close / btc_candles_4h[i - REGIME_BARS_30D].close - 1
         low_30d = min(c.close for c in btc_candles_4h[i - REGIME_BARS_30D + 1 : i + 1])
         off_low = close / low_30d - 1
         if ret_30d > STRONG_BULL_30D:
-            series.append((candle.candle_time, STRONG_BULL))
+            series.append((close_time(candle), STRONG_BULL))
         elif ret_30d <= 0 and off_low > REBOUND_OFF_LOW:
-            series.append((candle.candle_time, REBOUND))
+            series.append((close_time(candle), REBOUND))
         else:
-            series.append((candle.candle_time, None))
+            series.append((close_time(candle), None))
     return series
 
 
