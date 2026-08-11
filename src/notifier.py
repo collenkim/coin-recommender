@@ -3,31 +3,30 @@ from datetime import datetime, timedelta
 
 import requests
 
+from src.backtest import STOP_LOSS, TARGET_RETURN
+
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
-_TARGET_RETURN = 0.04
 _HOLD_HOURS = 24
 
 
 def _entry_guide_lines(r) -> list[str]:
-    """BR16: the entry the backtest actually measured, so acting on it matches expected_return."""
+    """BR16/BR18: the entry the backtest actually measured, so acting on it matches the published
+    probability. 목표가·손절가는 진입가에서 파생하므로 백테스트 규칙과 어긋날 수 없다."""
     entry_price = getattr(r, "entry_price", None)
     entry_time = getattr(r, "entry_time", None)
     if entry_price is None or entry_time is None:
         return []
     deadline = entry_time + timedelta(hours=_HOLD_HOURS)
-    lines = [
-        f"    진입 {entry_price:,.4g} ({entry_time.strftime('%m-%d %H:%M')} UTC 종가 기준)"
-        f" → 목표 {entry_price * (1 + _TARGET_RETURN):,.4g} (+{_TARGET_RETURN:.0%})",
+    return [
+        f"    진입 {entry_price:,.6g} ({entry_time.strftime('%m-%d %H:%M')} UTC 종가 기준)",
+        f"    매도 {entry_price * (1 + TARGET_RETURN):,.6g} (+{TARGET_RETURN:.0%})"
+        f"  /  손절 {entry_price * (1 - STOP_LOSS):,.6g} (-{STOP_LOSS:.0%})",
         f"    청산 기한 {deadline.strftime('%m-%d %H:%M')} UTC (진입 +{_HOLD_HOURS}시간)",
     ]
-    max_drawdown = getattr(r, "max_drawdown", None)
-    if max_drawdown is not None:
-        lines.append(f"    과거 동일 신호 최대 낙폭 {max_drawdown:.1%} (손절 지시 아님, 참고용)")
-    return lines
 
 
 def _format_message(run_time: datetime, recommendations: list) -> str:
@@ -37,9 +36,13 @@ def _format_message(run_time: datetime, recommendations: list) -> str:
         return f"{header}\n\n이번 회차 추천 없음"
     lines = []
     for r in recommendations:
+        hit_rate = getattr(r, "hit_rate", None)
+        if hit_rate is None and r.n:
+            hit_rate = r.hit_count / r.n
+        rate_text = "-" if hit_rate is None else f"{hit_rate:.0%}"
         lines.append(
-            f"- [{getattr(r, 'source', 'upbit')}] {r.market}: 기대수익률 {r.expected_return:.1%}"
-            f" (과거 {r.n}회 중 {r.hit_count}회 적중)"
+            f"- [{getattr(r, 'source', 'binance')}] {r.market}: 24시간 내 목표 도달 확률 {rate_text}"
+            f" (과거 {r.n}회 중 {r.hit_count}회, 손절 -{STOP_LOSS:.0%} 적용 기준)"
         )
         lines.extend(_entry_guide_lines(r))
     return header + "\n\n" + "\n".join(lines)

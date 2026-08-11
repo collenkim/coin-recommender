@@ -96,8 +96,18 @@
 - [x] Verified live (운영 DB 사본 + 실제 거래소 호출): KRW-ADA 4,327→8,752봉(365일), BTC/ETH 4시간봉 1,080→2,189봉. 백필 1회 30요청/4.4초 후 정상 상태 2요청으로 복귀(= 매번 재호출 없음). 상장 1년 미만 코인(KRW-BLEND)은 매 실행 4요청으로 제한(전체 재수집이었다면 26요청). 레짐 종목까지 깊어진 뒤 KRW-ADA 표본 n=2→13, 스캔 성능 40개 코인 환산 24초
 - [ ] **미배포**: 코드 변경만 완료. 다음 파이프라인 실행 시 자동으로 백필이 시작되며, 최초 1회는 실행 시간이 약 2분 늘어남
 
+### 🔁 Follow-up Request (2026-08-11): 바이낸스 전용 + 레짐 게이트 + 진입가/손절가/매도가
+- [x] 조사 — "80% 확률" 요구를 구현 전에 실측으로 검증하고 **달성 불가**로 보고(1년/3년/5년 모두 +3% 터치 상한 46~48%, 강한상승 조건부 58.0%). 구름 돌파 가설도 기각(강한상승에서 48.0%로 기저 50.0% 미만). 기대수익률 4% 임계값이 실제 분포 최댓값(+2.68%)보다 높아 구조적으로 통과 불가였음을 확인 — 누적 추천 0건의 직접 원인
+- [x] 표본 확대 — 1년 -> 3년 -> **5년**(2021-08~, 126만봉, 21분기, 2021 고점·2022 폭락·2024 상승장 포함). 별도 분석 DB 사용(운영 DB는 365일 유지)
+- [x] **분석 코드 버그 자체 발견 및 정정** — bool Series에 `~`를 object dtype 상태로 적용해 "구름 돌파"가 "구름 위 상태"로 측정되고 있었음. 조합 결과가 원본과 완전히 일치하는 것을 보고 발견. 수정 후 해당 시그널은 16/21 -> 13/21로 유의성 소멸(보고 정정함)
+- [x] Requirements Analysis — 사용자 결정: 진입 조건 C1(거래량돌파∩추세지속), 손절 -2% 적용 및 확률도 그 기준, 목표 +3%, 바이낸스 전용
+- [x] Functional Design — Unit 1 BR12(바이낸스 전용 수집), Unit 2 BR18~BR21(매매 규칙/진입 조건/레짐 게이트/추천 하한). 기존 BR4·BR5·BR7 폐기
+- [x] Code Generation — `src/backtest.py` 전면 교체(레이스 시뮬레이션, 레짐 판정, Wilson 하한, 골든크로스 계열 제거), `src/scorer.py`, `src/pipeline.py`(업비트 제거), `src/api.py`(stop_price/hit_rate/hit_rate_lower), `src/notifier.py`, README. 테스트 137/137 통과
+- [x] Verified — 운영 코드가 분석 스크립트를 재현(898매매 목표달성 41.6% vs 분석값 40.7~42.9%). 과거 강한상승 시점(2025-05-22T16:00Z)으로 되감아 실전 코드 경로 통과 확인: WLDUSDT 진입 1.516 / 매도 1.56148(+3%) / 손절 1.48568(-2%) / 확률 40.9%(n=44) / 청산기한 +24h, 파생값 3종 모두 일치
+- [ ] **미배포** — 현재 레짐이 None(하락장)이므로 배포해도 추천은 나오지 않습니다. 게이트가 열리는 시간은 5년 기준 약 19%
+
 ## Current Status
 - **Lifecycle Phase**: COMPLETE (base project) + 6 follow-up features delivered (Docker Compose infra; 추천 결과 적중 판별; 바이낸스/업비트 거래소별 추천 5개씩 포함; 추천 발생 빈도 개선; 추천 신뢰도 향상; 진입 가이드 및 24시간 유효기간)
-- **Current Stage**: 백테스트 이력 365일 확대 코드 완료, 배포 대기 (2026-08-11). Operations remains a placeholder with no defined steps (per core-workflow.md)
+- **Current Stage**: 바이낸스 전용 재설계 완료, 배포 대기 (2026-08-11). Operations remains a placeholder with no defined steps (per core-workflow.md)
 - **Next Stage**: None — all delivered work approved. Future work would re-enter as a new AI-DLC request (e.g. "Using AI-DLC, add X")
 - **Status**: Done

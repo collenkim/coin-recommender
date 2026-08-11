@@ -1,15 +1,23 @@
 from datetime import datetime, timedelta, timezone
-
-from hypothesis import given, settings
-from hypothesis import strategies as st
+from unittest.mock import patch
 
 from src.backtest import (
-    GOLDEN_CROSS_LOOKBACK_BARS,
+    BREAKOUT_BARS,
+    FORWARD_BARS_1H,
+    REBOUND,
+    REGIME_BARS_30D,
+    STOP_LOSS,
+    STRONG_BULL,
+    TARGET_RETURN,
+    TradeOutcome,
     aggregate_stats,
+    build_regime_series,
     compute_signal_stats,
+    entry_signal,
     evaluate_outcome,
-    golden_cross_event,
-    golden_cross_within,
+    regime_as_of,
+    simulate_trade,
+    wilson_lower,
 )
 from src.data_store import Candle
 from src.features import IchimokuPoint
@@ -18,271 +26,237 @@ UTC = timezone.utc
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
 
 
-def point(hour, close=100.0, tenkan=None, kijun=None, senkou_a=None, senkou_b=None) -> IchimokuPoint:
-    return IchimokuPoint(
-        candle_time=T0 + timedelta(hours=hour),
-        close=close,
-        tenkan=tenkan,
-        kijun=kijun,
-        senkou_a=senkou_a,
-        senkou_b=senkou_b,
-    )
-
-
-def candle(hour, close=100.0, high=None) -> Candle:
+def candle(i: int, close: float, high=None, low=None, volume=100.0, timeframe="1h") -> Candle:
     return Candle(
-        market="KRW-XRP",
-        timeframe="1h",
-        candle_time=T0 + timedelta(hours=hour),
+        market="TESTUSDT",
+        timeframe=timeframe,
+        candle_time=T0 + timedelta(hours=i),
         open=close,
-        high=high if high is not None else close,
-        low=close,
+        high=close if high is None else high,
+        low=close if low is None else low,
         close=close,
-        volume=1.0,
+        volume=volume,
     )
 
 
-# --- golden_cross_event ---
-
-def test_golden_cross_event_true_on_exact_crossover_bar():
-    points = [point(0, tenkan=9, kijun=10), point(1, tenkan=11, kijun=10)]
-    assert golden_cross_event(points, 1) is True
-
-
-def test_golden_cross_event_false_when_already_above():
-    points = [point(0, tenkan=11, kijun=10), point(1, tenkan=12, kijun=10)]
-    assert golden_cross_event(points, 1) is False
+def point(i: int, close: float, tenkan=2.0, kijun=1.0, senkou_a=0.5, senkou_b=0.4) -> IchimokuPoint:
+    return IchimokuPoint(
+        candle_time=T0 + timedelta(hours=i), close=close, tenkan=tenkan, kijun=kijun, senkou_a=senkou_a, senkou_b=senkou_b
+    )
 
 
-def test_golden_cross_event_false_at_index_zero():
-    points = [point(0, tenkan=11, kijun=10)]
-    assert golden_cross_event(points, 0) is False
+# --- wilson_lower (BR21) ---
+
+def test_wilson_lower_does_not_treat_a_perfect_tiny_sample_as_certainty():
+    assert wilson_lower(3, 3) < 0.50  # 3승 3패없음이라도 "확률 100%"로 읽히면 안 된다
+    assert wilson_lower(20, 20) > wilson_lower(3, 3)
 
 
-def test_golden_cross_event_false_when_indicators_missing():
-    points = [point(0, tenkan=None, kijun=None), point(1, tenkan=11, kijun=10)]
-    assert golden_cross_event(points, 1) is False
+def test_wilson_lower_is_zero_without_samples():
+    assert wilson_lower(0, 0) == 0.0
 
 
-# --- golden_cross_within (BR4 window) ---
+# --- build_regime_series / regime_as_of (BR20) ---
 
-def test_golden_cross_within_true_on_the_crossover_bar_itself():
-    points = [point(0, tenkan=9, kijun=10), point(1, tenkan=11, kijun=10)]
-    assert golden_cross_within(points, 1) is True
-
-
-CROSS_BAR = 1  # the bar the golden cross fires on in the fixtures below
+def _btc_series(closes: list[float]) -> list[Candle]:
+    return [candle(i, c, timeframe="4h") for i, c in enumerate(closes)]
 
 
-def _points_with_cross_at_bar_1(total_bars: int) -> list[IchimokuPoint]:
-    points = [point(0, tenkan=9, kijun=10), point(1, tenkan=11, kijun=10)]
-    points += [point(h) for h in range(2, total_bars)]
-    return points
+def test_regime_is_strong_bull_when_btc_gained_more_than_20_percent_over_30_days():
+    closes = [100.0] + [100.0 + i * 0.2 for i in range(REGIME_BARS_30D)]  # 100 -> 135.8
+    series = build_regime_series(_btc_series(closes))
+    assert series[-1][1] == STRONG_BULL
 
 
-def test_golden_cross_within_true_on_the_last_bar_still_inside_the_lookback():
-    last_valid = CROSS_BAR + GOLDEN_CROSS_LOOKBACK_BARS - 1
-    points = _points_with_cross_at_bar_1(last_valid + 2)
-
-    assert golden_cross_within(points, last_valid) is True
-
-
-def test_golden_cross_within_false_once_the_cross_falls_out_of_the_lookback():
-    expired = CROSS_BAR + GOLDEN_CROSS_LOOKBACK_BARS
-    points = _points_with_cross_at_bar_1(expired + 1)
-
-    assert golden_cross_within(points, expired) is False
+def test_regime_is_rebound_when_btc_is_down_over_30_days_but_up_off_its_low():
+    # 100 -> 82.2로 하락(30일 수익률 음수)한 뒤 92.0으로 반등(저점 대비 +11.9%)
+    closes = [100.0] + [100.0 - i * 0.1 for i in range(REGIME_BARS_30D - 1)] + [92.0]
+    series = build_regime_series(_btc_series(closes))
+    assert series[-1][1] == REBOUND
 
 
-def test_golden_cross_within_false_when_no_cross_at_all():
-    points = [point(h, tenkan=9, kijun=10) for h in range(0, 5)]
-    assert golden_cross_within(points, 4) is False
+def test_regime_is_none_in_a_flat_market():
+    series = build_regime_series(_btc_series([100.0] * (REGIME_BARS_30D + 1)))
+    assert series[-1][1] is None
 
 
-# --- compute_signal_stats (integration of BR6/BR7/BR8) ---
-
-def _bullish_4h_series(hours: list[int]) -> list[IchimokuPoint]:
-    return [point(h, close=100.0, senkou_a=10.0, senkou_b=5.0) for h in hours]
-
-
-def test_compute_signal_stats_takes_one_sample_per_crossover():
-    """BR8 dedup: a cross at bar 10 makes bars 10..12 actionable (lookback=3), but they are the same
-    event -- only the first qualifying bar is sampled, so n counts crossovers, not entry bars."""
-    assert GOLDEN_CROSS_LOOKBACK_BARS == 3  # the expectations below are written for this value
-
-    points_1h = [point(h, close=100.0, tenkan=9, kijun=10) for h in range(0, 10)]
-    points_1h.append(point(10, close=100.0, tenkan=11, kijun=10))  # cross event here
-    points_1h += [point(h, close=100.0) for h in range(11, 40)]  # flat; no further cross (tenkan=None)
-    points_1h[34] = point(34, close=106.0)  # forward bar of entry bar 10 -> +6%
-    points_1h[35] = point(35, close=100.0)  # would be entry bar 11's forward bar, must NOT be sampled
-    points_1h[36] = point(36, close=100.0)  # would be entry bar 12's forward bar, must NOT be sampled
-
-    bullish_4h = _bullish_4h_series(list(range(0, 40, 4)))
-    now = T0 + timedelta(hours=100)  # far enough that the signals are > 24h old
-
-    stats = compute_signal_stats("KRW-XRP", points_1h, bullish_4h, bullish_4h, bullish_4h, now)
-
-    assert stats.n == 1  # one crossover -> one sample, not three
-    assert abs(stats.expected_return - 0.06) < 1e-9  # the +6% entry, undiluted by its own duplicates
-    assert stats.hit_count == 1
+def test_regime_is_none_before_30_days_of_history_exist():
+    """레짐을 계산할 수 없는 구간에서 진입하면 게이트가 없는 것과 같다."""
+    series = build_regime_series(_btc_series([100.0] * REGIME_BARS_30D))
+    assert all(regime is None for _, regime in series)
 
 
-def test_compute_signal_stats_counts_two_separate_crossovers_separately():
-    """Dedup must not collapse genuinely distinct events: two crossovers far apart give n == 2."""
-    points_1h = [point(h, close=100.0, tenkan=9, kijun=10) for h in range(0, 10)]
-    points_1h.append(point(10, close=100.0, tenkan=11, kijun=10))  # cross 1
-    points_1h += [point(h, close=100.0, tenkan=9, kijun=10) for h in range(11, 20)]
-    points_1h.append(point(20, close=100.0, tenkan=11, kijun=10))  # cross 2
-    points_1h += [point(h, close=100.0) for h in range(21, 50)]
-    points_1h[34] = point(34, close=106.0)  # cross 1 forward -> +6%
-    points_1h[44] = point(44, close=100.0)  # cross 2 forward ->  0%
-
-    bullish_4h = _bullish_4h_series(list(range(0, 50, 4)))
-    now = T0 + timedelta(hours=200)
-
-    stats = compute_signal_stats("KRW-XRP", points_1h, bullish_4h, bullish_4h, bullish_4h, now)
-
-    assert stats.n == 2
-    assert abs(stats.expected_return - 0.03) < 1e-9  # mean of +6% and 0%
-    assert stats.hit_count == 1
+def test_regime_as_of_returns_none_before_the_series_starts():
+    series = [(T0 + timedelta(hours=4), STRONG_BULL)]
+    assert regime_as_of(series, T0) is None
+    assert regime_as_of(series, T0 + timedelta(hours=5)) == STRONG_BULL
 
 
-def test_compute_signal_stats_excludes_signal_within_last_24h():
-    points_1h = [point(h, tenkan=9, kijun=10) for h in range(0, 10)]
-    points_1h.append(point(10, tenkan=11, kijun=10))
-    points_1h += [point(h) for h in range(11, 40)]
+# --- entry_signal (BR19) ---
 
-    points_4h = _bullish_4h_series(list(range(0, 40, 4)))
-    now = T0 + timedelta(hours=15)  # signal at hour 10 is only 5h old -> excluded
+def _entry_setup(volume=300.0, close=11.0, tenkan=2.0, kijun_rising=True, above_cloud=True):
+    """24봉의 평탄한 이력 뒤에 돌파 봉 하나. 각 조건을 개별로 끌 수 있게 만든다."""
+    candles = [candle(i, 10.0, high=10.0, volume=100.0) for i in range(BREAKOUT_BARS)]
+    candles.append(candle(BREAKOUT_BARS, close, high=close, volume=volume))
+    points = [point(i, 10.0, kijun=1.0) for i in range(BREAKOUT_BARS)]
+    points.append(
+        point(
+            BREAKOUT_BARS,
+            close,
+            tenkan=tenkan,
+            kijun=1.5 if kijun_rising else 1.0,
+            senkou_a=0.5 if above_cloud else close + 1,
+            senkou_b=0.4 if above_cloud else close + 2,
+        )
+    )
+    return candles, points
 
-    stats = compute_signal_stats("KRW-XRP", points_1h, points_4h, points_4h, points_4h, now)
 
+def test_entry_signal_fires_on_a_volume_confirmed_breakout_in_an_uptrend():
+    candles, points = _entry_setup()
+    assert entry_signal(candles, points, BREAKOUT_BARS) is True
+
+
+def test_entry_signal_requires_the_close_to_clear_the_24h_high():
+    candles, points = _entry_setup(close=9.5)
+    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+
+
+def test_entry_signal_requires_volume_above_twice_the_average():
+    candles, points = _entry_setup(volume=110.0)
+    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+
+
+def test_entry_signal_requires_price_above_the_cloud():
+    candles, points = _entry_setup(above_cloud=False)
+    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+
+
+def test_entry_signal_requires_tenkan_above_kijun():
+    candles, points = _entry_setup(tenkan=1.0)
+    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+
+
+def test_entry_signal_requires_a_rising_kijun():
+    candles, points = _entry_setup(kijun_rising=False)
+    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+
+
+def test_entry_signal_is_false_before_enough_history_exists():
+    candles, points = _entry_setup()
+    assert entry_signal(candles, points, 3) is False
+
+
+# --- simulate_trade (BR18) ---
+
+def _forward(entry_close: float, bars: list[tuple[float, float, float]]) -> list[Candle]:
+    """진입봉 + (high, low, close) 24봉."""
+    out = [candle(0, entry_close)]
+    out += [candle(i + 1, c, high=h, low=lo) for i, (h, lo, c) in enumerate(bars)]
+    return out
+
+
+FLAT = (100.5, 99.5, 100.0)
+
+
+def test_simulate_trade_wins_when_the_target_is_touched_first():
+    bars = [FLAT] * 5 + [(103.5, 99.5, 103.0)] + [FLAT] * 18
+    outcome = simulate_trade(_forward(100.0, bars), 0)
+    assert outcome.result == "win"
+    assert outcome.ret == TARGET_RETURN
+
+
+def test_simulate_trade_loses_when_the_stop_is_touched_first():
+    bars = [FLAT] * 3 + [(100.5, 97.0, 97.5)] + [(103.5, 99.0, 103.0)] + [FLAT] * 19
+    outcome = simulate_trade(_forward(100.0, bars), 0)
+    assert outcome.result == "loss"
+    assert outcome.ret == -STOP_LOSS
+
+
+def test_simulate_trade_counts_a_same_bar_tie_as_a_loss():
+    """한 봉에서 목표와 손절을 둘 다 만족하면 OHLC로는 선후를 알 수 없다 -- 보수적으로 손절."""
+    bars = [(103.5, 97.0, 100.0)] + [FLAT] * 23
+    assert simulate_trade(_forward(100.0, bars), 0).result == "loss"
+
+
+def test_simulate_trade_times_out_and_exits_at_the_last_close():
+    bars = [FLAT] * 23 + [(101.0, 99.5, 101.0)]
+    outcome = simulate_trade(_forward(100.0, bars), 0)
+    assert outcome.result == "timeout"
+    assert outcome.ret == 0.01
+
+
+def test_simulate_trade_returns_none_before_the_window_has_closed():
+    bars = [FLAT] * (FORWARD_BARS_1H - 1)
+    assert simulate_trade(_forward(100.0, bars), 0) is None
+
+
+def test_simulate_trade_reports_the_worst_dip_before_exit():
+    bars = [(100.5, 99.0, 100.0)] + [(103.5, 99.5, 103.0)] + [FLAT] * 22
+    assert simulate_trade(_forward(100.0, bars), 0).drawdown == -0.01
+
+
+# --- compute_signal_stats (BR21) ---
+
+def _long_history(bars: int = 200) -> tuple[list[Candle], list[IchimokuPoint]]:
+    candles = [candle(i, 100.0, high=100.5, low=99.5) for i in range(bars)]
+    points = [point(i, 100.0) for i in range(bars)]
+    return candles, points
+
+
+def test_compute_signal_stats_does_not_open_a_new_trade_while_one_is_open():
+    """겹치는 진입을 각각 세면 같은 구간의 결과가 여러 번 반영되어 표본이 부풀고 확률이 왜곡된다."""
+    candles, points = _long_history()
+    regime = [(T0 - timedelta(hours=1), STRONG_BULL)]
+    with patch("src.backtest.entry_signal", side_effect=lambda c, p, i: i in (10, 11, 12, 40)):
+        stats = compute_signal_stats("TESTUSDT", candles, points, regime)
+    assert stats.n == 2  # 10에서 진입하면 34까지 보유하므로 11/12는 무시되고 40이 다음 진입
+
+
+def test_compute_signal_stats_skips_entries_outside_the_allowed_regime():
+    candles, points = _long_history()
+    regime = [(T0 - timedelta(hours=1), None)]
+    with patch("src.backtest.entry_signal", side_effect=lambda c, p, i: i == 10):
+        stats = compute_signal_stats("TESTUSDT", candles, points, regime)
     assert stats.n == 0
-    assert stats.expected_return is None
+    assert stats.hit_rate is None
 
 
-def test_compute_signal_stats_excludes_when_regime_not_bullish():
-    points_1h = [point(h, tenkan=9, kijun=10) for h in range(0, 10)]
-    points_1h.append(point(10, tenkan=11, kijun=10))
-    points_1h += [point(h) for h in range(11, 40)]
+# --- aggregate_stats ---
 
-    points_4h = _bullish_4h_series(list(range(0, 40, 4)))
-    bearish_regime = [point(h, close=1.0, senkou_a=5.0, senkou_b=10.0) for h in range(0, 40, 4)]  # not bullish
-    now = T0 + timedelta(hours=100)
-
-    stats = compute_signal_stats("KRW-XRP", points_1h, points_4h, bearish_regime, points_4h, now)
-
-    assert stats.n == 0
+def test_aggregate_stats_reports_none_rather_than_zero_without_samples():
+    stats = aggregate_stats("TESTUSDT", [])
+    assert stats.n == 0 and stats.hit_rate is None and stats.expected_return is None
 
 
-def test_compute_signal_stats_excludes_when_coin_4h_trend_fails():
-    points_1h = [point(h, tenkan=9, kijun=10) for h in range(0, 10)]
-    points_1h.append(point(10, tenkan=11, kijun=10))
-    points_1h += [point(h) for h in range(11, 40)]
-
-    bearish_4h = [point(h, close=1.0, senkou_a=5.0, senkou_b=10.0) for h in range(0, 40, 4)]
-    bullish_regime = _bullish_4h_series(list(range(0, 40, 4)))
-    now = T0 + timedelta(hours=100)
-
-    stats = compute_signal_stats("KRW-XRP", points_1h, bearish_4h, bullish_regime, bullish_regime, now)
-
-    assert stats.n == 0
-
-
-def test_compute_signal_stats_reports_worst_drawdown_across_samples():
-    """BR16: max_drawdown comes from the raw candles' lows, which IchimokuPoint does not carry."""
-    points_1h = [point(h, close=100.0, tenkan=9, kijun=10) for h in range(0, 10)]
-    points_1h.append(point(10, close=100.0, tenkan=11, kijun=10))  # cross -> entry bar 10
-    points_1h += [point(h, close=100.0) for h in range(11, 40)]
-
-    candles = [candle(h, close=100.0) for h in range(0, 40)]
-    candles[15] = Candle("KRW-XRP", "1h", T0 + timedelta(hours=15), 100.0, 100.0, 93.0, 100.0, 1.0)  # -7% dip
-
-    bullish_4h = _bullish_4h_series(list(range(0, 40, 4)))
-    now = T0 + timedelta(hours=100)
-
-    stats = compute_signal_stats("KRW-XRP", points_1h, bullish_4h, bullish_4h, bullish_4h, now, candles_1h=candles)
-
-    assert stats.n == 1
-    assert abs(stats.max_drawdown - (-0.07)) < 1e-9
-
-
-def test_compute_signal_stats_leaves_drawdown_none_without_candles():
-    points_1h = [point(h, close=100.0, tenkan=9, kijun=10) for h in range(0, 10)]
-    points_1h.append(point(10, close=100.0, tenkan=11, kijun=10))
-    points_1h += [point(h, close=100.0) for h in range(11, 40)]
-    bullish_4h = _bullish_4h_series(list(range(0, 40, 4)))
-
-    stats = compute_signal_stats("KRW-XRP", points_1h, bullish_4h, bullish_4h, bullish_4h, T0 + timedelta(hours=100))
-
-    assert stats.max_drawdown is None
-
-
-# --- aggregate_stats (PBT-03 invariants) ---
-
-@settings(deadline=None)
-@given(samples=st.lists(st.floats(min_value=-0.5, max_value=0.5, allow_nan=False), max_size=50))
-def test_pbt_hit_count_never_exceeds_n(samples):
-    stats = aggregate_stats("KRW-XRP", samples)
-    assert stats.hit_count <= stats.n
-    assert stats.n == len(samples)
-
-
-def test_aggregate_stats_empty_samples_yields_none_expected_return():
-    stats = aggregate_stats("KRW-XRP", [])
-    assert stats.n == 0
-    assert stats.expected_return is None
-    assert stats.hit_count == 0
-
-
-@settings(deadline=None)
-@given(samples=st.lists(st.floats(min_value=-0.5, max_value=0.5, allow_nan=False), min_size=1, max_size=50))
-def test_pbt_expected_return_is_mean_of_samples(samples):
-    stats = aggregate_stats("KRW-XRP", samples)
-    assert abs(stats.expected_return - (sum(samples) / len(samples))) < 1e-9
+def test_aggregate_stats_counts_only_wins_as_hits():
+    results = [
+        TradeOutcome("win", TARGET_RETURN, -0.01),
+        TradeOutcome("loss", -STOP_LOSS, -STOP_LOSS),
+        TradeOutcome("timeout", 0.005, -0.015),
+    ]
+    stats = aggregate_stats("TESTUSDT", results)
+    assert stats.n == 3 and stats.hit_count == 1
+    assert stats.hit_rate == 1 / 3
+    assert stats.max_drawdown == -STOP_LOSS
 
 
 # --- evaluate_outcome (BR11) ---
 
-def test_evaluate_outcome_target_reached_via_intra_window_high():
-    run_time = T0 + timedelta(hours=10)
-    candles = [candle(h, close=100.0) for h in range(0, 10)]
-    candles.append(candle(10, close=100.0))  # entry candle, close=100
-    window = [candle(h, close=100.0) for h in range(11, 34)]  # 23 candles, no move
-    window.append(candle(34, close=100.0, high=105.0))  # 24th candle: high touches +5%, close flat
-    candles += window
-    now = T0 + timedelta(hours=100)
-
-    outcome = evaluate_outcome("KRW-XRP", run_time, candles, now)
-
-    assert outcome is not None
-    assert outcome.target_reached is True  # high-based (Q1=B), even though close-based realized_return is ~0
-    assert abs(outcome.realized_return - 0.0) < 1e-9
-    assert outcome.evaluated_at == now
+def test_evaluate_outcome_uses_the_same_rule_as_the_live_simulation():
+    """추천할 때 쓴 확률과 사후 성패 판정이 다른 기준이면 적중률 기록이 의미를 잃는다."""
+    bars = [FLAT] * 2 + [(103.5, 99.5, 103.0)] + [FLAT] * 21
+    candles = _forward(100.0, bars)
+    outcome = evaluate_outcome("TESTUSDT", candles[0].candle_time, candles, datetime(2024, 6, 1, tzinfo=UTC))
+    assert outcome.target_reached is True
+    assert outcome.realized_return == TARGET_RETURN
 
 
-def test_evaluate_outcome_target_not_reached():
-    run_time = T0 + timedelta(hours=10)
-    candles = [candle(h, close=100.0) for h in range(0, 11)]
-    candles += [candle(h, close=101.0, high=102.0) for h in range(11, 35)]  # +2% high, never hits +4%
-    now = T0 + timedelta(hours=100)
-
-    outcome = evaluate_outcome("KRW-XRP", run_time, candles, now)
-
-    assert outcome is not None
-    assert outcome.target_reached is False
-    assert abs(outcome.realized_return - 0.01) < 1e-9
+def test_evaluate_outcome_returns_none_until_the_window_closes():
+    candles = _forward(100.0, [FLAT] * 3)
+    assert evaluate_outcome("TESTUSDT", candles[0].candle_time, candles, datetime(2024, 6, 1, tzinfo=UTC)) is None
 
 
-def test_evaluate_outcome_none_when_no_entry_candle_found():
-    run_time = T0 - timedelta(hours=1)  # before any stored candle
-    candles = [candle(h) for h in range(0, 30)]
-
-    assert evaluate_outcome("KRW-XRP", run_time, candles, T0 + timedelta(hours=100)) is None
-
-
-def test_evaluate_outcome_none_when_window_incomplete():
-    run_time = T0 + timedelta(hours=10)
-    candles = [candle(h) for h in range(0, 11)] + [candle(h) for h in range(11, 20)]  # only 9 bars after entry
-
-    assert evaluate_outcome("KRW-XRP", run_time, candles, T0 + timedelta(hours=100)) is None
+def test_evaluate_outcome_returns_none_when_no_candle_precedes_the_run():
+    candles = _forward(100.0, [FLAT] * 24)
+    assert evaluate_outcome("TESTUSDT", T0 - timedelta(hours=5), candles, datetime(2024, 6, 1, tzinfo=UTC)) is None

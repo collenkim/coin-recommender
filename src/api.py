@@ -6,12 +6,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from src.backtest import FORWARD_BARS_1H
+from src.backtest import FORWARD_BARS_1H, STOP_LOSS, TARGET_RETURN, wilson_lower
 from src.config import settings
 from src.data_store import DataStore
 from src.pipeline import AlreadyRunningError, run_recommendation_pipeline
 from src.scheduler import start_scheduler, stop_scheduler
-from src.scorer import EXPECTED_RETURN_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +21,20 @@ _VALIDITY_WINDOW = timedelta(hours=FORWARD_BARS_1H)
 
 class RecommendationOut(BaseModel):
     market: str
-    source: str = "upbit"
+    source: str = "binance"
     expected_return: float
     n: int
     hit_count: int
-    # BR16 entry guide. entry_price/entry_time are the bar the backtest measures from; target_price
-    # and exit_deadline are derived from them so they cannot drift out of step.
+    # BR21: 손절가를 치기 전에 목표가에 도달한 과거 비율과 그 95% 신뢰 하한. 표본이 얇은 코인의
+    # "적중률 100%"를 그대로 확률처럼 읽지 않도록 하한을 함께 노출한다.
+    hit_rate: float | None = None
+    hit_rate_lower: float | None = None
+    # BR16/BR18 entry guide. entry_price/entry_time are the bar the backtest measures from;
+    # target_price/stop_price/exit_deadline are derived so they cannot drift out of step.
     entry_time: datetime | None = None
     entry_price: float | None = None
     target_price: float | None = None
+    stop_price: float | None = None
     exit_deadline: datetime | None = None
     max_drawdown: float | None = None
     target_reached: bool | None = None
@@ -72,15 +76,21 @@ async def global_exception_handler(request, exc: Exception):
 def _to_recommendation_out(r) -> RecommendationOut:
     entry_time = getattr(r, "entry_time", None)
     entry_price = getattr(r, "entry_price", None)
+    # 적중률은 저장된 n/hit_count에서 그대로 유도한다 -- 별도 컬럼을 두면 저장 시점과 계산 방식이
+    # 어긋날 수 있고, 과거 회차 행에도 같은 규칙이 자동으로 적용된다.
+    hit_rate = (r.hit_count / r.n) if r.n else None
     return RecommendationOut(
         market=r.market,
-        source=getattr(r, "source", "upbit"),
+        source=getattr(r, "source", "binance"),
         expected_return=r.expected_return,
         n=r.n,
         hit_count=r.hit_count,
+        hit_rate=hit_rate,
+        hit_rate_lower=None if hit_rate is None else wilson_lower(r.hit_count, r.n),
         entry_time=entry_time,
         entry_price=entry_price,
-        target_price=None if entry_price is None else entry_price * (1 + EXPECTED_RETURN_THRESHOLD),
+        target_price=None if entry_price is None else entry_price * (1 + TARGET_RETURN),
+        stop_price=None if entry_price is None else entry_price * (1 - STOP_LOSS),
         exit_deadline=None if entry_time is None else entry_time + _VALIDITY_WINDOW,
         max_drawdown=getattr(r, "max_drawdown", None),
         target_reached=getattr(r, "target_reached", None),
@@ -148,7 +158,7 @@ def trigger_run() -> RecommendationsResponse:
         raise HTTPException(status_code=409, detail="이미 실행 중입니다")
     return RecommendationsResponse(
         run_time=result.run_time,
-        regime_bullish=result.regime_bullish,
+        regime_bullish=result.regime is not None,
         recommendations=[_to_recommendation_out(r) for r in result.recommendations],
     )
 

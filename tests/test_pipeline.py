@@ -3,12 +3,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.backtest import STRONG_BULL
 from src.config import settings
 from src.pipeline import AlreadyRunningError, _lock, evaluate_pending_outcomes, run_recommendation_pipeline
 
 
 class FakeRecommendation:
-    def __init__(self, market="KRW-XRP", expected_return=0.05, n=3, hit_count=1, source="upbit"):
+    def __init__(self, market="SOLUSDT", expected_return=0.01, n=5, hit_count=3, source="binance"):
         self.market = market
         self.expected_return = expected_return
         self.n = n
@@ -18,24 +19,20 @@ class FakeRecommendation:
 
 def _patched_pipeline(**overrides):
     defaults = dict(
-        market_selector_markets=["KRW-XRP"],
-        binance_selector_markets=[],
-        regime_bullish=True,
+        binance_selector_markets=["SOLUSDT"],
+        regime=STRONG_BULL,
         recommendations=[FakeRecommendation()],
     )
     defaults.update(overrides)
 
     mock_store = MagicMock()
-    mock_selector_instance = MagicMock()
-    mock_selector_instance.get_candidate_markets.return_value = defaults["market_selector_markets"]
+    mock_store.get_first_candle_time.return_value = None
     mock_binance_selector_instance = MagicMock()
     mock_binance_selector_instance.get_candidate_markets.return_value = defaults["binance_selector_markets"]
 
     patches = [
-        patch("src.pipeline.MarketSelector", return_value=mock_selector_instance),
-        patch("src.pipeline.UpbitClient"),
         patch("src.pipeline.BinanceClient"),
-        patch("src.pipeline.check_market_regime", return_value=defaults["regime_bullish"]),
+        patch("src.pipeline.check_market_regime", return_value=defaults["regime"]),
         patch("src.pipeline.generate_recommendations", return_value=defaults["recommendations"]),
         patch("src.pipeline.send_notification"),
         patch("src.pipeline.BinanceMarketSelector", return_value=mock_binance_selector_instance),
@@ -54,21 +51,40 @@ def test_lock_prevents_concurrent_runs():
 
 def test_successful_run_saves_result_and_notifies():
     patches, mock_store = _patched_pipeline()
-    with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_gen, patches[5] as mock_notify, patches[6]:
+    with patches[0], patches[1], patches[2] as mock_gen, patches[3] as mock_notify, patches[4]:
         result = run_recommendation_pipeline(data_store=mock_store)
 
-    assert result.regime_bullish is True
-    assert result.recommendations == mock_gen.return_value + mock_gen.return_value
+    assert result.regime == STRONG_BULL
+    assert result.recommendations == mock_gen.return_value
     mock_store.save_run.assert_called_once()
-    saved_args = mock_store.save_run.call_args.args
-    assert saved_args[1] is True  # regime_bullish
+    assert mock_store.save_run.call_args.args[1] is True  # regime is not None
     mock_notify.assert_called_once()
+
+
+def test_run_outside_an_allowed_regime_is_saved_as_not_bullish():
+    patches, mock_store = _patched_pipeline(regime=None, recommendations=[])
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = run_recommendation_pipeline(data_store=mock_store)
+
+    assert result.regime is None
+    assert mock_store.save_run.call_args.args[1] is False
+
+
+def test_only_binance_candles_are_collected():
+    """업비트 추천을 뺀 뒤로 업비트 캔들을 모을 이유가 없다 -- 수집이 남아 있으면 순수 낭비다."""
+    patches, mock_store = _patched_pipeline()
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        run_recommendation_pipeline(data_store=mock_store)
+
+    sources = {call.args[0] for call in mock_store.upsert_candles.call_args_list}
+    assert sources == {"binance"}
 
 
 def test_notification_failure_does_not_fail_the_run():
     patches, mock_store = _patched_pipeline()
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[6], \
-         patch("src.pipeline.send_notification", side_effect=RuntimeError("webhook down")):
+    with patches[0], patches[1], patches[2], patches[4], patch(
+        "src.pipeline.send_notification", side_effect=RuntimeError("webhook down")
+    ):
         result = run_recommendation_pipeline(data_store=mock_store)
 
     assert result is not None
@@ -77,96 +93,31 @@ def test_notification_failure_does_not_fail_the_run():
 
 def test_lock_released_after_run_so_next_call_succeeds():
     patches, mock_store = _patched_pipeline()
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
         run_recommendation_pipeline(data_store=mock_store)
         run_recommendation_pipeline(data_store=mock_store)  # would raise AlreadyRunningError if lock leaked
 
 
 def test_lock_released_even_if_generate_recommendations_raises():
     patches, mock_store = _patched_pipeline()
-    with patches[0], patches[1], patches[2], patches[3], patches[6], \
-         patch("src.pipeline.generate_recommendations", side_effect=RuntimeError("boom")):
+    with patches[0], patches[1], patches[4], patch(
+        "src.pipeline.generate_recommendations", side_effect=RuntimeError("boom")
+    ):
         with pytest.raises(RuntimeError):
             run_recommendation_pipeline(data_store=mock_store)
 
     assert not _lock.locked()
 
 
-def test_recommendations_capped_per_exchange():
-    upbit_recs = [FakeRecommendation(market=f"KRW-{i}", source="upbit") for i in range(7)]
-    binance_recs = [FakeRecommendation(market=f"SYM{i}USDT", source="binance") for i in range(7)]
-    patches, mock_store = _patched_pipeline(recommendations=None)
+def test_recommendations_are_capped():
+    many = [FakeRecommendation(market=f"SYM{i}USDT") for i in range(7)]
+    patches, mock_store = _patched_pipeline(recommendations=many)
 
-    with patches[0], patches[1], patches[2], patches[3], patches[6], \
-         patch("src.pipeline.generate_recommendations", side_effect=[upbit_recs, binance_recs]), \
-         patch("src.pipeline.send_notification"):
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
         result = run_recommendation_pipeline(data_store=mock_store)
 
-    assert [r.market for r in result.recommendations] == [f"KRW-{i}" for i in range(5)] + [f"SYM{i}USDT" for i in range(5)]
-
-
-def test_data_collection_failure_for_one_market_does_not_abort_pipeline():
-    mock_store = MagicMock()
-    mock_store.get_first_candle_time.return_value = None
-    mock_store.get_last_candle_time.return_value = None
-    mock_upbit = MagicMock()
-    mock_upbit.get_ohlcv.side_effect = RuntimeError("network error")
-
-    from src.pipeline import _collect_and_store
-
-    # Should not raise -- failure is caught and logged (Unit 1 graceful degradation, BR7)
-    _collect_and_store(mock_store, mock_upbit, "KRW-XRP")
-
-    mock_store.upsert_candles.assert_not_called()
-
-
-def test_upbit_bootstrap_requests_the_full_configured_lookback():
-    mock_store = MagicMock()
-    mock_store.get_first_candle_time.return_value = None
-    mock_upbit = MagicMock()
-    mock_upbit.get_ohlcv.return_value = []
-
-    from src.pipeline import _collect_and_store
-
-    _collect_and_store(mock_store, mock_upbit, "KRW-XRP")
-
-    counts = {call.args[1]: call.kwargs["count"] for call in mock_upbit.get_ohlcv.call_args_list}
-    assert counts["1h"] >= settings.backtest_lookback_days * 24
-    assert counts["4h"] >= settings.backtest_lookback_days * 24 // 4
-
-
-def test_upbit_collection_backfills_the_older_gap_when_history_is_shallower_than_lookback():
-    """Without this the incremental path (forward only) would leave markets bootstrapped under an
-    older, shorter lookback at their old depth forever -- mirrors the Binance backfill (BR9)."""
-    first_time = datetime.now(timezone.utc) - timedelta(days=10)
-    mock_store = MagicMock()
-    mock_store.get_first_candle_time.return_value = first_time
-    mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(hours=2)
-    mock_upbit = MagicMock()
-    mock_upbit.get_ohlcv.return_value = []
-
-    from src.pipeline import _collect_and_store
-
-    _collect_and_store(mock_store, mock_upbit, "KRW-XRP")
-
-    backfill_calls = [call for call in mock_upbit.get_ohlcv.call_args_list if call.kwargs.get("to") == first_time]
-    assert len(backfill_calls) == 2  # one per timeframe, reaching back from the earliest stored candle
-    # Only the missing older span is requested, not the whole window again (Upbit pages 200 at a time)
-    assert backfill_calls[0].kwargs["count"] < settings.backtest_lookback_days * 24
-
-
-def test_upbit_collection_skips_backfill_once_history_is_deep_enough():
-    mock_store = MagicMock()
-    mock_store.get_first_candle_time.return_value = datetime.now(timezone.utc) - timedelta(days=999)
-    mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(hours=2)
-    mock_upbit = MagicMock()
-    mock_upbit.get_ohlcv.return_value = []
-
-    from src.pipeline import _collect_and_store
-
-    _collect_and_store(mock_store, mock_upbit, "KRW-XRP")
-
-    assert [call.kwargs["count"] for call in mock_upbit.get_ohlcv.call_args_list] == [200, 200]
+    expected = settings.recommendations_per_exchange
+    assert [r.market for r in result.recommendations] == [f"SYM{i}USDT" for i in range(expected)]
 
 
 def test_binance_candidate_collection_failure_for_one_timeframe_does_not_abort_pipeline():

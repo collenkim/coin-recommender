@@ -81,8 +81,8 @@ def test_message_format_with_recommendations():
 
     message = mock_post.call_args.kwargs["json"]["content"]
     assert "KRW-XRP" in message
-    assert "5.1%" in message
-    assert "3회 중 2회 적중" in message
+    assert "67%" in message  # 3회 중 2회 = 목표 도달 확률
+    assert "과거 3회 중 2회" in message
 
 
 def test_message_format_includes_exchange_source():
@@ -109,10 +109,10 @@ def test_message_includes_entry_guide():
 
     message = mock_post.call_args.kwargs["json"]["content"]
     assert "진입 100" in message
-    assert "목표 104" in message  # +4%
+    assert "매도 103" in message  # +3%
+    assert "손절 98" in message  # -2%
     assert "08-11 07:00" in message  # 청산 기한 = 진입 +24h
-    assert "-6.2%" in message
-    assert "손절 지시 아님" in message  # drawdown is context, not an instruction
+    assert "08-10 07:00" in message  # 진입 기준 봉 마감 시각
 
 
 def test_message_omits_entry_guide_when_entry_data_missing():

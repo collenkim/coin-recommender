@@ -172,7 +172,11 @@ def test_get_recommendations_includes_entry_guide_with_derived_target_and_deadli
 
     rec = response.json()["recommendations"][0]
     assert rec["entry_price"] == 100.0
-    assert rec["target_price"] == 104.0  # entry x 1.04, derived so it cannot drift from the target rule
+    # BR18: 매도가/손절가 모두 진입가에서 파생되므로 매매 규칙과 어긋날 수 없다
+    assert rec["target_price"] == 103.0  # entry x 1.03
+    assert rec["stop_price"] == 98.0  # entry x 0.98
+    assert rec["hit_rate"] == 3 / 7  # 저장된 n/hit_count에서 유도
+    assert 0 < rec["hit_rate_lower"] < rec["hit_rate"]
     assert rec["max_drawdown"] == -0.062
     assert datetime.fromisoformat(rec["exit_deadline"]) == entry_time + timedelta(hours=24)
 
@@ -247,7 +251,7 @@ def test_get_recommendations_not_expired_just_under_the_window():
 
 def test_post_run_triggers_pipeline_and_returns_result():
     fake_result = PipelineRunResult(
-        run_time=datetime(2024, 1, 1, tzinfo=UTC), regime_bullish=True, recommendations=[FakeRecommendationRecord()]
+        run_time=datetime(2024, 1, 1, tzinfo=UTC), regime="strong_bull", recommendations=[FakeRecommendationRecord()]
     )
 
     with patch("src.api.start_scheduler"), patch("src.api.stop_scheduler"), \

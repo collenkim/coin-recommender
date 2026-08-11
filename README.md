@@ -1,6 +1,8 @@
 # coin-recommender
 
-1시간봉/4시간봉 일목균형표(구름대) 기반으로 하루 안에 +4% 상승 가능성이 높은 업비트 알트코인을 추천하는 FastAPI 서비스.
+1시간봉 거래량 확인 돌파 + 일목균형표 추세 조건으로, 24시간 안에 +3%를 터치할 확률이 높은 **바이낸스** 알트코인을 추천하는 FastAPI 서비스.
+
+BTC가 강한 상승장(30일 +20% 초과) 또는 반등 상승장(30일 하락 중이나 저점 대비 +10% 초과)일 때만 진입합니다 — 그 외 구간은 5년 실측에서 목표 달성률이 무작위 진입과 구분되지 않았습니다. 추천마다 진입가·매도가(+3%)·손절가(-2%)와 과거 실측 도달 확률을 함께 제공합니다.
 
 전체 요구사항/설계 문서는 `aidlc-docs/`를 참고하세요 (AI-DLC 워크플로우로 생성됨).
 
@@ -47,7 +49,7 @@ docker-compose up -d --build
 
 - SQLite DB는 호스트 `./data`에 바인드 마운트되어 컨테이너를 재생성해도 유지됩니다.
 - `.env`는 이미지에 포함되지 않고 `docker-compose up` 실행 시점에 컨테이너 환경변수로 주입됩니다 (커밋 금지).
-- 현재 업비트 연동은 `pyupbit`의 공개(인증 불필요) 캔들/티커 조회만 사용하므로 업비트 API 키는 필요/사용하지 않습니다.
+- 바이낸스 공개(인증 불필요) 캔들/티커 엔드포인트만 사용하므로 거래소 API 키는 필요/사용하지 않습니다.
 
 ### 실행 확인 (스모크 테스트)
 
@@ -58,7 +60,7 @@ docker-compose ps                              # STATUS 컬럼에 (healthy) 나�
 curl http://localhost:8000/health               # {"status":"ok","db_connected":true} 기대
 curl http://localhost:8000/recommendations      # 최신 추천 결과 (아직 한 번도 안 돌았으면 recommendations: [])
 curl http://localhost:8000/recommendations?limit=3   # 최근 3회차 이력까지 조회
-curl -X POST http://localhost:8000/run           # 수동으로 파이프라인 즉시 실행 (실제 업비트/바이낸스 호출, 몇 분 걸릴 수 있음)
+curl -X POST http://localhost:8000/run           # 수동으로 파이프라인 즉시 실행 (실제 바이낸스 호출, 몇 분 걸릴 수 있음)
 docker-compose logs -f                           # 실시간 로그로 스케줄러/에러 확인
 ```
 
