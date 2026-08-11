@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from hypothesis import given, settings
 
@@ -358,3 +358,20 @@ def test_get_recent_runs_respects_limit(tmp_path):
         store.save_run(datetime(2024, 1, i + 1, tzinfo=timezone.utc), True, [])
 
     assert len(store.get_recent_runs(limit=2)) == 2
+
+
+def test_close_time_supports_the_1m_timeframe_used_by_price_monitoring():
+    """BR22 회귀 방지: 1m이 빠져 있으면 drop_unclosed가 KeyError를 내고, 감시 루프의 예외
+    처리에 먹혀 '이벤트 0건'으로 조용히 넘어간다 (실제로 그렇게 한 번 놓쳤다)."""
+    from src.data_store import TIMEFRAME_HOURS, close_time, drop_unclosed
+
+    assert "1m" in TIMEFRAME_HOURS
+    opened = datetime(2026, 8, 11, 6, 0, tzinfo=timezone.utc)
+    candle = Candle(
+        market="SOLUSDT", timeframe="1m", candle_time=opened,
+        open=1.0, high=1.0, low=1.0, close=1.0, volume=1.0,
+    )
+    assert close_time(candle) == opened + timedelta(minutes=1)
+    # 아직 진행 중인 1분봉은 제외, 마감된 봉은 유지
+    assert drop_unclosed([candle], now=opened + timedelta(seconds=30)) == []
+    assert drop_unclosed([candle], now=opened + timedelta(minutes=1)) == [candle]

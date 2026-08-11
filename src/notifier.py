@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from src.backtest import STOP_LOSS, TARGET_RETURN
+from src.data_store import ENTRY_TOUCHED, STOP_HIT, TARGET_HIT
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,31 @@ def _recommendation_block(order: int, r) -> str:
     return "\n".join(lines)
 
 
+_EVENT_LABELS = {
+    ENTRY_TOUCHED: ("진입가 도달 (지금 진입 가능)", "진입가", f"기준"),
+    TARGET_HIT: ("매도가 도달", "매도가", f"+{TARGET_RETURN:.0%}"),
+    STOP_HIT: ("손절가 도달", "손절가", f"-{STOP_LOSS:.0%}"),
+}
+
+
+def _format_price_alert(now: datetime, events: list) -> str:
+    """BR22: 도달 알림도 추천 알림과 같은 형식 규칙 -- 상단에 건수, 종목마다 번호 붙인 단락."""
+    header = f"[coin-recommender] 가격 알림 {len(events)}건\n{_kst(now, '%Y-%m-%d %H:%M')} KST"
+    blocks = []
+    for order, event in enumerate(events, 1):
+        title, price_label, note = _EVENT_LABELS[event.kind]
+        blocks.append(
+            "\n".join(
+                [
+                    f"({order}) {event.market} · {title}",
+                    f"· {price_label}: {event.price:,.6g}  ({note})",
+                    f"· 도달 시각: {_kst(event.at)} KST",
+                ]
+            )
+        )
+    return header + "\n\n" + "\n\n".join(blocks)
+
+
 def _format_message(run_time: datetime, recommendations: list) -> str:
     """BR5: Korean notification message format. 상단에 추천 개수, 종목마다 번호 붙인 단락."""
     stamp = f"{_kst(run_time, '%Y-%m-%d %H:%M')} KST"
@@ -73,8 +99,47 @@ def send_notification(
 ) -> None:
     """BR4: sends to every configured channel independently; a failure on one channel does not
     prevent the others from being attempted. Caller (Pipeline) treats this as best-effort (BR3)."""
-    message = _format_message(run_time, recommendations)
+    _dispatch(
+        _format_message(run_time, recommendations),
+        telegram_bot_token,
+        telegram_chat_id,
+        discord_webhook_url,
+        slack_webhook_url,
+        timeout_seconds,
+    )
 
+
+def send_price_alert(
+    events: list,
+    now: datetime,
+    telegram_bot_token: str | None,
+    telegram_chat_id: str | None,
+    discord_webhook_url: str | None,
+    slack_webhook_url: str | None = None,
+    timeout_seconds: float = 10.0,
+) -> None:
+    """BR22: 가격 도달 알림. 발생한 이벤트가 없으면 아무것도 보내지 않는다 -- 5분마다
+    "변화 없음"을 보내면 하루 288통이 된다."""
+    if not events:
+        return
+    _dispatch(
+        _format_price_alert(now, events),
+        telegram_bot_token,
+        telegram_chat_id,
+        discord_webhook_url,
+        slack_webhook_url,
+        timeout_seconds,
+    )
+
+
+def _dispatch(
+    message: str,
+    telegram_bot_token: str | None,
+    telegram_chat_id: str | None,
+    discord_webhook_url: str | None,
+    slack_webhook_url: str | None,
+    timeout_seconds: float,
+) -> None:
     if telegram_bot_token and telegram_chat_id:
         _send_telegram(telegram_bot_token, telegram_chat_id, message, timeout_seconds)
     if discord_webhook_url:

@@ -8,7 +8,8 @@ from src.binance_client import BinanceClient
 from src.config import settings
 from src.data_store import DataStore
 from src.market_selector import BinanceMarketSelector
-from src.notifier import send_notification
+from src.monitor import check_price_events
+from src.notifier import send_notification, send_price_alert
 from src.scorer import BTC_MARKET, REGIME_TIMEFRAME, SOURCE, check_market_regime, generate_recommendations
 
 _EVALUATION_WINDOW_HOURS = 24
@@ -56,6 +57,32 @@ def _collect_and_store_binance(
             data_store.upsert_candles(SOURCE, symbol, timeframe, candles)
         except Exception:
             logger.warning("Failed to collect Binance %s %s; skipping this market/timeframe this run", symbol, timeframe, exc_info=True)
+
+
+def run_price_monitor(data_store: DataStore | None = None) -> list:
+    """BR22: 활성 추천의 진입가/매도가/손절가 도달을 확인하고, 새로 발생한 것만 알린다.
+
+    파이프라인 락을 공유하지 않는다 -- 읽기 위주에 짧은 UPDATE만 하고, 시간당 1회 실행되는
+    파이프라인이 도는 동안에도 5분 감시는 계속되어야 한다 (SQLite는 WAL 모드).
+    """
+    store = data_store or DataStore(settings.db_path)
+    binance_client = BinanceClient(timeout_seconds=settings.http_timeout_seconds, max_retries=settings.http_max_retries)
+    events = check_price_events(store, binance_client, datetime.now(timezone.utc))
+
+    if events:
+        try:
+            send_price_alert(
+                events,
+                datetime.now(timezone.utc),
+                settings.telegram_bot_token,
+                settings.telegram_chat_id,
+                settings.discord_webhook_url,
+                settings.slack_webhook_url,
+                timeout_seconds=settings.http_timeout_seconds,
+            )
+        except Exception:
+            logger.warning("Price alert notification failed; events are already recorded", exc_info=True)
+    return events
 
 
 def evaluate_pending_outcomes(data_store: DataStore, now: datetime) -> None:

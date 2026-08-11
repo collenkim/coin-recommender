@@ -7,7 +7,9 @@ from typing import Literal
 
 Source = Literal["upbit", "binance"]
 
-TIMEFRAME_HOURS = {"1h": 1, "4h": 4}
+# 1m은 BR22 가격 감시 전용 (저장하지 않고 조회만 한다). 빠지면 drop_unclosed가 KeyError를
+# 내고, 감시 루프의 예외 처리에 먹혀 "이벤트 0건"으로 조용히 넘어간다.
+TIMEFRAME_HOURS = {"1m": 1 / 60, "1h": 1, "4h": 4}
 
 _TABLE_BY_SOURCE = {
     "upbit": "upbit_candles",
@@ -86,6 +88,28 @@ class PipelineRunResult:
     recommendations: list[RecommendationRecord]
 
 
+# BR22: 가격 감시 이벤트 이름 -> 컬럼. 이름을 그대로 SQL에 넣지 않기 위한 화이트리스트이기도 하다.
+ENTRY_TOUCHED = "entry"
+TARGET_HIT = "target"
+STOP_HIT = "stop"
+_PRICE_EVENT_COLUMNS = {
+    ENTRY_TOUCHED: "entry_touched_at",
+    TARGET_HIT: "target_hit_at",
+    STOP_HIT: "stop_hit_at",
+}
+
+
+@dataclass(frozen=True)
+class MonitoredRecommendation:
+    """BR22: 아직 종료되지 않은 추천 1건 -- 감시에 필요한 필드만 담는다."""
+
+    run_time: datetime
+    market: str
+    entry_price: float
+    entry_time: datetime
+    entry_touched_at: datetime | None
+
+
 _RUNS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     run_time TEXT PRIMARY KEY,
@@ -117,6 +141,11 @@ _RECOMMENDATIONS_OUTCOME_COLUMNS = [
     ("entry_time", "TEXT"),
     ("entry_price", "REAL"),
     ("max_drawdown", "REAL"),
+    # BR22 가격 감시: 각 이벤트가 최초로 발생한 시각. NULL이면 아직 미발생이며, 값이 채워진
+    # 뒤에는 다시 알리지 않는다 (5분마다 같은 알림이 반복되는 것을 막는 기록이 곧 상태다).
+    ("entry_touched_at", "TEXT"),
+    ("target_hit_at", "TEXT"),
+    ("stop_hit_at", "TEXT"),
 ]
 
 
@@ -358,6 +387,43 @@ class DataStore:
                 (older_than.isoformat(),),
             ).fetchall()
         return [(market, datetime.fromisoformat(run_time_str), source or "upbit") for market, run_time_str, source in rows]
+
+    def get_monitorable_recommendations(self, since: datetime) -> list[MonitoredRecommendation]:
+        """BR22: `since` 이후에 나온 추천 중 아직 종료되지 않은 것들.
+
+        목표가나 손절가에 이미 닿은 건은 포지션이 끝난 것이므로 제외한다 -- 감시를 계속하면
+        같은 종목을 24시간 내내 조회하게 된다. 진입가 정보가 없는 과거 행도 감시 대상이 아니다."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT run_time, market, entry_price, entry_time, entry_touched_at, target_hit_at, stop_hit_at
+                FROM recommendations
+                WHERE run_time >= ? AND entry_price IS NOT NULL AND entry_time IS NOT NULL
+                  AND target_hit_at IS NULL AND stop_hit_at IS NULL
+                ORDER BY run_time
+                """,
+                (since.isoformat(),),
+            ).fetchall()
+        return [
+            MonitoredRecommendation(
+                run_time=datetime.fromisoformat(run_time),
+                market=market,
+                entry_price=entry_price,
+                entry_time=datetime.fromisoformat(entry_time),
+                entry_touched_at=None if entry_touched_at is None else datetime.fromisoformat(entry_touched_at),
+            )
+            for run_time, market, entry_price, entry_time, entry_touched_at, _, _ in rows
+        ]
+
+    def mark_price_event(self, run_time: datetime, market: str, event: str, at: datetime) -> None:
+        """BR22: 이벤트 발생 시각을 기록한다. 이미 값이 있으면 덮어쓰지 않는다 -- 최초 도달
+        시각이어야 의미가 있고, 이 컬럼이 곧 "이미 알림을 보냈다"는 표시이기도 하다."""
+        column = _PRICE_EVENT_COLUMNS[event]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE recommendations SET {column} = ? WHERE run_time = ? AND market = ? AND {column} IS NULL",
+                (at.isoformat(), run_time.isoformat(), market),
+            )
 
     def record_outcome(self, outcome) -> None:
         """BR9/BR11: persists a RecommendationOutcome onto its recommendation row.

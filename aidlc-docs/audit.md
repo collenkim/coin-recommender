@@ -789,3 +789,20 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation.
 
 ---
+
+## Code Generation - 가격 도달 감시 스케줄러 (5분 주기)
+**Timestamp**: 2026-08-11T07:15:00Z
+**User Input**: "추천 코인이 있을 경우에는 주기적으로 스케줄을 돌아 5분마다, 진입가에 도달했는지 상향가에 도달했는지 하안가에 도달했는지 확인하는 스케줄러 추가로 돌려줘."
+**해석 명시**: "진입가 도달"은 추천 시점의 진입가가 그 순간 종가라 이미 도달 상태이므로, **"가격이 다시 진입가까지 내려와 지금 진입 가능해진 시점"**으로 해석했고 사용자에게 명시했습니다. 세 이벤트 모두 각각 1회만 알리며, 매도가/손절가 도달 시 해당 종목 감시를 종료합니다.
+**Files Modified**:
+- `src/data_store.py`: `entry_touched_at`/`target_hit_at`/`stop_hit_at` 컬럼(기존 ALTER TABLE 마이그레이션 재사용), `MonitoredRecommendation`, `get_monitorable_recommendations`, `mark_price_event`(NULL일 때만 UPDATE -- 기록 자체가 중복 알림 방지 장치)
+- `src/monitor.py` (신규): `check_price_events`, `_events_for`. 1분봉 고가/저가로 판정하며 동일봉 동시 충족은 손절 우선(BR18과 같은 보수 판정)
+- `src/notifier.py`: `_dispatch` 추출 후 `send_price_alert` 추가. 이벤트 0건이면 발송하지 않음(5분마다 "변화 없음"은 하루 288통)
+- `src/pipeline.py`: `run_price_monitor`. 파이프라인 락을 공유하지 않음
+- `src/scheduler.py`: `CronTrigger(minute="*/5")` 잡 추가
+- `tests/test_monitor.py`(신규 12건), `tests/test_notifier.py`(+3), `tests/test_data_store.py`(+1)
+**발견한 결함 (실호출 검증 중)**: `TIMEFRAME_HOURS`에 `1m`이 없어 `drop_unclosed`가 KeyError를 냈고, 감시 루프의 예외 처리에 먹혀 **이벤트 0건으로 조용히 넘어갔습니다.** MagicMock 클라이언트를 쓴 단위 테스트 12건은 전부 통과했고 실제 거래소 호출에서만 드러났습니다. 수정 후 회귀 방지 테스트 추가.
+**Verification**: 테스트 164/164 통과. 운영 DB 사본에 실제 SOLUSDT 진입가(76.0800 @ 04:00Z)로 가상 추천을 넣고 실제 바이낸스 1분봉으로 감시 실행 -- entry 이벤트 1건 감지, 재실행 시 0건(중복 없음) 확인. 스케줄러 잡 2개 등록 확인(`cron[minute='5']`, `cron[minute='*/5']`). 슬랙으로 가격 알림 형식 예시 발송.
+**Context**: Code Generation.
+
+---

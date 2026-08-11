@@ -211,3 +211,54 @@ def test_zero_recommendations_still_reports_a_count():
     message = mock_post.call_args.kwargs["json"]["content"]
     assert "추천 코인 0개" in message
     assert "이번 회차 추천 없음" in message
+
+
+# --- 가격 도달 알림 (BR22) ---
+
+class FakePriceEvent:
+    def __init__(self, market, kind, price, at):
+        self.market, self.kind, self.price, self.at = market, kind, price, at
+
+
+def test_price_alert_is_not_sent_when_nothing_happened():
+    """5분마다 '변화 없음'을 보내면 하루 288통이 된다."""
+    from src.notifier import send_price_alert
+
+    with patch("src.notifier.requests.post") as mock_post:
+        send_price_alert([], RUN_TIME, None, None, "https://discord.example/webhook")
+    mock_post.assert_not_called()
+
+
+def test_price_alert_lists_each_event_as_a_numbered_paragraph():
+    from src.data_store import ENTRY_TOUCHED, STOP_HIT, TARGET_HIT
+    from src.notifier import send_price_alert
+
+    at = datetime(2026, 8, 11, 6, 32, tzinfo=UTC)
+    events = [
+        FakePriceEvent("SOLUSDT", TARGET_HIT, 103.0, at),
+        FakePriceEvent("ADAUSDT", STOP_HIT, 98.0, at),
+        FakePriceEvent("WLDUSDT", ENTRY_TOUCHED, 100.0, at),
+    ]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_price_alert(events, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert message.startswith("[coin-recommender] 가격 알림 3건")
+    assert "(1) SOLUSDT · 매도가 도달" in message
+    assert "(2) ADAUSDT · 손절가 도달" in message
+    assert "(3) WLDUSDT · 진입가 도달" in message
+    assert "08-11 15:32 KST" in message  # 06:32 UTC = 15:32 KST
+    assert "UTC" not in message
+
+
+def test_price_alert_goes_to_every_configured_channel():
+    from src.data_store import TARGET_HIT
+    from src.notifier import send_price_alert
+
+    events = [FakePriceEvent("SOLUSDT", TARGET_HIT, 103.0, datetime(2026, 8, 11, 6, 32, tzinfo=UTC))]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_price_alert(
+            events, RUN_TIME, "TOKEN123", "CHAT456", "https://discord.example/webhook", "https://hooks.slack.com/services/T/B/X"
+        )
+
+    assert mock_post.call_count == 3
