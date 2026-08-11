@@ -68,6 +68,49 @@ def test_telegram_failure_does_not_prevent_discord_send():
     assert mock_post.call_count == 2  # both attempted despite telegram failing
 
 
+def test_sends_to_slack_only_when_only_slack_configured():
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification([], RUN_TIME, None, None, None, "https://hooks.slack.com/services/T/B/X")
+
+    mock_post.assert_called_once()
+    assert mock_post.call_args.args[0] == "https://hooks.slack.com/services/T/B/X"
+    # Slack은 Discord의 `content`가 아니라 `text` 키를 쓴다
+    assert list(mock_post.call_args.kwargs["json"]) == ["text"]
+
+
+def test_sends_to_all_three_channels_when_all_configured():
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification(
+            [], RUN_TIME, "TOKEN123", "CHAT456", "https://discord.example/webhook", "https://hooks.slack.com/services/T/B/X"
+        )
+
+    assert mock_post.call_count == 3
+
+
+def test_discord_failure_does_not_prevent_slack_send():
+    with patch("src.notifier.requests.post", side_effect=[requests.RequestException("boom"), ok_response()]) as mock_post:
+        send_notification([], RUN_TIME, None, None, "https://discord.example/webhook", "https://hooks.slack.com/services/T/B/X")
+
+    assert mock_post.call_count == 2  # 한 채널이 죽어도 나머지는 계속 시도한다
+    assert mock_post.call_args_list[-1].args[0] == "https://hooks.slack.com/services/T/B/X"
+
+
+def test_slack_failure_does_not_raise():
+    """알림은 best-effort -- 실패해도 파이프라인 실행 자체는 성공으로 취급한다 (BR3)."""
+    with patch("src.notifier.requests.post", side_effect=requests.RequestException("boom")):
+        send_notification([], RUN_TIME, None, None, None, "https://hooks.slack.com/services/T/B/X")
+
+
+def test_slack_message_body_matches_the_other_channels():
+    recs = [FakeRecommendation("SOLUSDT", 0.01, 5, 3, source="binance")]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook", "https://hooks.slack.com/services/T/B/X")
+
+    discord_body = mock_post.call_args_list[0].kwargs["json"]["content"]
+    slack_body = mock_post.call_args_list[1].kwargs["json"]["text"]
+    assert discord_body == slack_body
+
+
 def test_telegram_partial_config_does_not_send():
     with patch("src.notifier.requests.post") as mock_post:
         send_notification([], RUN_TIME, "TOKEN123", None, None)  # missing chat_id

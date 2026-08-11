@@ -109,6 +109,7 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
                 settings.telegram_bot_token,
                 settings.telegram_chat_id,
                 settings.discord_webhook_url,
+                settings.slack_webhook_url,
                 timeout_seconds=settings.http_timeout_seconds,
             )
         except Exception:

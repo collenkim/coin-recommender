@@ -742,3 +742,19 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation. 배포 미수행 — 현재 레짐이 None이라 배포해도 추천 0건이며, 게이트가 열리는 시간은 5년 기준 약 19%(강한상승 11.5% + 반등 7.8%).
 
 ---
+
+## Code Generation - 슬랙 알림 채널 추가
+**Timestamp**: 2026-08-11T06:25:00Z
+**User Input**: "슬랙으로 받을 수 있도록 해줘. 슬랙 키 값이나 필요하면 파라미터로 전달 받아서 실행되도록"
+**AI Response**: Slack **Incoming Webhook** 방식으로 구현했습니다. Discord와 동일한 단일 URL POST이고 페이로드 키만 `content` -> `text`로 다르므로 기존 채널 패턴을 그대로 재사용했습니다. 봇 토큰 + `chat.postMessage` 방식(Telegram과 같은 토큰+대상 조합)은 채택하지 않았고, 필요하면 작은 변경이라고 안내했습니다 -- 요청받지 않은 두 방식 동시 지원은 넣지 않았습니다.
+**Files Modified**:
+- `src/notifier.py`: `send_notification`에 `slack_webhook_url` 파라미터 추가(기본값 None이라 기존 위치 인자 호출이 그대로 동작), `_send_slack` 추가, "설정된 채널 없음" 판정에 슬랙 포함
+- `src/config.py`: `slack_webhook_url` (시크릿, .env 전용 — SECURITY-12)
+- `src/pipeline.py`: `settings.slack_webhook_url` 전달
+- `.env.example`: `SLACK_WEBHOOK_URL` 항목 및 발급 경로 안내 추가
+- `README.md`: 시크릿 설명에 슬랙 반영
+- `tests/test_notifier.py`: 슬랙 단독 발송/3채널 동시 발송/디스코드 실패 후 슬랙 계속 발송/슬랙 실패 시 예외 미전파/본문이 채널 간 동일 — 5건 추가
+**Verification**: 페이로드 형태 확인 — POST `https://hooks.slack.com/services/...`, body `{"text": ...}` 단일 키. 본문이 Discord 발송분과 문자열 동일함을 테스트로 고정. 테스트 142/142 통과(137에서 +5). 실제 워크스페이스 발송은 웹훅 URL이 없어 미검증.
+**Context**: Code Generation. `SLACK_WEBHOOK_URL`을 비워두면 슬랙으로는 보내지 않으며(에러 아님) 기존 채널 동작에는 영향 없음.
+
+---

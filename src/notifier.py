@@ -54,17 +54,20 @@ def send_notification(
     telegram_bot_token: str | None,
     telegram_chat_id: str | None,
     discord_webhook_url: str | None,
+    slack_webhook_url: str | None = None,
     timeout_seconds: float = 10.0,
 ) -> None:
     """BR4: sends to every configured channel independently; a failure on one channel does not
-    prevent the other from being attempted. Caller (Pipeline) treats this as best-effort (BR3)."""
+    prevent the others from being attempted. Caller (Pipeline) treats this as best-effort (BR3)."""
     message = _format_message(run_time, recommendations)
 
     if telegram_bot_token and telegram_chat_id:
         _send_telegram(telegram_bot_token, telegram_chat_id, message, timeout_seconds)
     if discord_webhook_url:
         _send_discord(discord_webhook_url, message, timeout_seconds)
-    if not (telegram_bot_token and telegram_chat_id) and not discord_webhook_url:
+    if slack_webhook_url:
+        _send_slack(slack_webhook_url, message, timeout_seconds)
+    if not any((telegram_bot_token and telegram_chat_id, discord_webhook_url, slack_webhook_url)):
         logger.info("No notification channel configured; skipping notification")
 
 
@@ -85,3 +88,13 @@ def _send_discord(webhook_url: str, message: str, timeout_seconds: float) -> Non
         response.raise_for_status()
     except requests.RequestException:
         logger.warning("Discord notification failed", exc_info=True)
+
+
+def _send_slack(webhook_url: str, message: str, timeout_seconds: float) -> None:
+    """Slack Incoming Webhook. Discord와 같은 단일 URL POST 방식이고 페이로드 키만 `text`로 다르다
+    (Telegram처럼 토큰+대상 조합이 필요하지 않다)."""
+    try:
+        response = requests.post(webhook_url, json={"text": message}, timeout=timeout_seconds)
+        response.raise_for_status()
+    except requests.RequestException:
+        logger.warning("Slack notification failed", exc_info=True)

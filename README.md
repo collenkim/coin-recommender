@@ -22,7 +22,7 @@ cp .env.example .env   # 필요 시 웹훅 URL 등 채우기
 ## 설정
 
 - `config/settings.yaml`: 비민감 설정 (임계값, 기간 등)
-- `.env`: 시크릿 (텔레그램/디스코드 웹훅 URL 등) — 커밋 금지
+- `.env`: 시크릿 (텔레그램 봇 토큰, 디스코드/슬랙 웹훅 URL 등) — 커밋 금지
 
 ## 진행 상태
 
@@ -43,7 +43,7 @@ uvicorn src.api:app --reload
 ## Docker로 실행 (서버 상시 운영용)
 
 ```bash
-cp .env.example .env   # 아직 안 했다면; 텔레그램/디스코드 시크릿 채우기
+cp .env.example .env   # 아직 안 했다면; 텔레그램/디스코드/슬랙 시크릿 채우기
 docker-compose up -d --build
 ```
 

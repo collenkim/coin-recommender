@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None  # secret, set via .env only (SECURITY-12)
     telegram_chat_id: str | None = None  # set via .env only
     discord_webhook_url: str | None = None  # secret, set via .env only
+    slack_webhook_url: str | None = None  # secret, set via .env only (Slack Incoming Webhook URL)
     scheduler_misfire_grace_seconds: int = 300
 
     @classmethod
