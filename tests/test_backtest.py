@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from src.backtest import (
     BREAKOUT_BARS,
+    VOLUME_BASELINE_BARS,
     FORWARD_BARS_1H,
     REBOUND,
     REGIME_BARS_30D,
@@ -94,14 +95,18 @@ def test_regime_as_of_returns_none_before_the_series_starts():
 
 # --- entry_signal (BR19) ---
 
+# 돌파 구간(4봉)보다 거래량 기준선(24봉)이 길므로, 신호가 가능한 첫 인덱스는 24다.
+ENTRY_INDEX = max(BREAKOUT_BARS, VOLUME_BASELINE_BARS)
+
+
 def _entry_setup(volume=300.0, close=11.0, tenkan=2.0, kijun_rising=True, above_cloud=True):
-    """24봉의 평탄한 이력 뒤에 돌파 봉 하나. 각 조건을 개별로 끌 수 있게 만든다."""
-    candles = [candle(i, 10.0, high=10.0, volume=100.0) for i in range(BREAKOUT_BARS)]
-    candles.append(candle(BREAKOUT_BARS, close, high=close, volume=volume))
-    points = [point(i, 10.0, kijun=1.0) for i in range(BREAKOUT_BARS)]
+    """평탄한 이력 뒤에 돌파 봉 하나. 각 조건을 개별로 끌 수 있게 만든다."""
+    candles = [candle(i, 10.0, high=10.0, volume=100.0) for i in range(ENTRY_INDEX)]
+    candles.append(candle(ENTRY_INDEX, close, high=close, volume=volume))
+    points = [point(i, 10.0, kijun=1.0) for i in range(ENTRY_INDEX)]
     points.append(
         point(
-            BREAKOUT_BARS,
+            ENTRY_INDEX,
             close,
             tenkan=tenkan,
             kijun=1.5 if kijun_rising else 1.0,
@@ -114,32 +119,32 @@ def _entry_setup(volume=300.0, close=11.0, tenkan=2.0, kijun_rising=True, above_
 
 def test_entry_signal_fires_on_a_volume_confirmed_breakout_in_an_uptrend():
     candles, points = _entry_setup()
-    assert entry_signal(candles, points, BREAKOUT_BARS) is True
+    assert entry_signal(candles, points, ENTRY_INDEX) is True
 
 
 def test_entry_signal_requires_the_close_to_clear_the_24h_high():
     candles, points = _entry_setup(close=9.5)
-    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+    assert entry_signal(candles, points, ENTRY_INDEX) is False
 
 
 def test_entry_signal_requires_volume_above_twice_the_average():
     candles, points = _entry_setup(volume=110.0)
-    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+    assert entry_signal(candles, points, ENTRY_INDEX) is False
 
 
 def test_entry_signal_requires_price_above_the_cloud():
     candles, points = _entry_setup(above_cloud=False)
-    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+    assert entry_signal(candles, points, ENTRY_INDEX) is False
 
 
 def test_entry_signal_requires_tenkan_above_kijun():
     candles, points = _entry_setup(tenkan=1.0)
-    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+    assert entry_signal(candles, points, ENTRY_INDEX) is False
 
 
 def test_entry_signal_requires_a_rising_kijun():
     candles, points = _entry_setup(kijun_rising=False)
-    assert entry_signal(candles, points, BREAKOUT_BARS) is False
+    assert entry_signal(candles, points, ENTRY_INDEX) is False
 
 
 def test_entry_signal_is_false_before_enough_history_exists():
@@ -274,3 +279,24 @@ def test_regime_is_stamped_at_bar_close_not_bar_open():
     # 봉이 마감되기 전에는 그 봉의 레짐을 볼 수 없다
     assert regime_as_of(series, last_open + timedelta(hours=1)) != STRONG_BULL
     assert regime_as_of(series, last_open + timedelta(hours=4)) == STRONG_BULL
+
+
+def test_entry_signal_uses_the_short_breakout_window_but_the_long_volume_baseline():
+    """두 구간을 한 상수로 묶으면 돌파를 짧게 줄일 때 거래량 조건까지 함께 약해진다.
+    직전 4시간 고가만 넘으면 되지만, 거래량은 24시간 평균 대비로 판정해야 한다."""
+    assert BREAKOUT_BARS < VOLUME_BASELINE_BARS
+
+    # 5시간 전에 고가 12가 있었지만 직전 4시간 고가는 10 -> 종가 11이면 4시간 기준으로는 돌파
+    candles = [candle(i, 10.0, high=10.0, volume=100.0) for i in range(ENTRY_INDEX)]
+    candles[ENTRY_INDEX - 5] = candle(ENTRY_INDEX - 5, 10.0, high=12.0, volume=100.0)
+    candles.append(candle(ENTRY_INDEX, 11.0, high=11.0, volume=300.0))
+    points = [point(i, 10.0, kijun=1.0) for i in range(ENTRY_INDEX)]
+    points.append(point(ENTRY_INDEX, 11.0, kijun=1.5))
+    assert entry_signal(candles, points, ENTRY_INDEX) is True
+
+    # 거래량은 24시간 평균 기준이므로, 직전 4시간만 조용했다고 통과되면 안 된다
+    quiet = [candle(i, 10.0, high=10.0, volume=100.0) for i in range(ENTRY_INDEX)]
+    for k in range(ENTRY_INDEX - 4, ENTRY_INDEX):
+        quiet[k] = candle(k, 10.0, high=10.0, volume=1.0)
+    quiet.append(candle(ENTRY_INDEX, 11.0, high=11.0, volume=150.0))  # 4시간 평균의 2배는 넘지만 24시간 평균 대비로는 미달
+    assert entry_signal(quiet, points, ENTRY_INDEX) is False

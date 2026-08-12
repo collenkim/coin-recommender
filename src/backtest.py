@@ -13,7 +13,10 @@ STOP_LOSS = 0.02
 FORWARD_BARS_1H = 24  # 24h forward window on 1h candles
 
 # --- 진입 조건 (BR19): 거래량 확인 돌파 ∩ 추세 지속 ---
-BREAKOUT_BARS = 24
+# 돌파 구간과 거래량 기준선은 반드시 분리한다. 하나로 묶으면 돌파를 4시간으로 줄일 때
+# 거래량 조건이 "직전 4시간 평균의 2배"로 함께 약해져, 무엇 때문에 결과가 변했는지 알 수 없다.
+BREAKOUT_BARS = 4
+VOLUME_BASELINE_BARS = 24
 VOLUME_MULTIPLE = 2.0
 KIJUN_RISE_BARS = 6
 
@@ -111,12 +114,17 @@ def regime_as_of(series: list[tuple[datetime, str | None]], timestamp: datetime)
 
 
 def entry_signal(candles_1h: list[Candle], points_1h: list[IchimokuPoint], i: int) -> bool:
-    """BR19: 종가가 직전 24시간 고가를 돌파하고 거래량이 24시간 평균의 2배를 넘으면서,
+    """BR19: 종가가 직전 4시간 고가를 돌파하고 거래량이 24시간 평균의 2배를 넘으면서,
     구름 위 + 전환선 > 기준선 + 기준선 상승(6봉 전 대비)인 봉.
 
     5년 21분기 중 16분기에서 무조건부 기저 대비 우위였고, 강한 상승장 목표달성률 59.7%로
-    시험한 조건 중 가장 높았다."""
-    if i < BREAKOUT_BARS or i >= len(points_1h) or i >= len(candles_1h):
+    시험한 조건 중 가장 높았다.
+
+    돌파 구간은 실측상 거의 영향이 없다 -- 4/6/8/12/24시간 모두 목표달성률 38.7~39.2%로
+    같고 매매 수만 935/919/911/898/874로 달라진다. 거래량이 24시간 평균의 2배로 터지는
+    순간이면 어차피 어느 구간 기준으로도 신고가이기 때문에, 실질 병목은 거래량 조건이다.
+    4시간을 쓰는 것은 품질 손실 없이 매매 기회가 7% 많기 때문이다."""
+    if i < max(BREAKOUT_BARS, VOLUME_BASELINE_BARS) or i >= len(points_1h) or i >= len(candles_1h):
         return False
     point = points_1h[i]
     if None in (point.tenkan, point.kijun, point.senkou_a, point.senkou_b):
@@ -132,7 +140,7 @@ def entry_signal(candles_1h: list[Candle], points_1h: list[IchimokuPoint], i: in
     breakout_window = candles_1h[i - BREAKOUT_BARS : i]
     if candles_1h[i].close <= max(c.high for c in breakout_window):
         return False
-    volume_window = candles_1h[i - BREAKOUT_BARS + 1 : i + 1]
+    volume_window = candles_1h[i - VOLUME_BASELINE_BARS + 1 : i + 1]
     average_volume = sum(c.volume for c in volume_window) / len(volume_window)
     return average_volume > 0 and candles_1h[i].volume > VOLUME_MULTIPLE * average_volume
 
