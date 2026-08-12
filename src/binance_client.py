@@ -9,6 +9,9 @@ from src.data_store import Candle, TickerInfo, drop_unclosed
 _BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 _BINANCE_TICKER_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
 _MAX_LIMIT = 1000
+# 폭주 방지 상한. 5년치 1시간봉이 43,800개(44페이지)이므로 그보다 넉넉해야 한다 -- 모자라면
+# 예외 없이 조용히 잘려서, 설정한 lookback보다 짧은 이력으로 백테스트가 돌아간다.
+_MAX_PAGES = 60
 
 T = TypeVar("T")
 
@@ -71,7 +74,7 @@ class BinanceClient:
         ]
         return drop_unclosed(candles)
 
-    def get_klines_since(self, symbol: str, interval: str, start_time: datetime, max_requests: int = 20) -> list[Candle]:
+    def get_klines_since(self, symbol: str, interval: str, start_time: datetime, max_requests: int = _MAX_PAGES) -> list[Candle]:
         """Paginated history fetch from `start_time` to now.
 
         Binance returns at most _MAX_LIMIT candles per response, and `get_klines` clamps to that
@@ -79,8 +82,9 @@ class BinanceClient:
         though backtest_lookback_days was 180. This walks forward until the exchange stops
         returning new candles, so the configured lookback is actually honoured.
 
-        `max_requests` is a runaway guard: 20 requests covers 20,000 candles, comfortably past the
-        ~8,760 that 365 days of 1h bars needs.
+        `max_requests` is a runaway guard. It must exceed what the configured lookback needs --
+        5 years of 1h bars is 43,800 candles (44 pages), and a guard set below that truncates
+        silently, leaving the backtest running on less history than configured.
         """
         collected: list[Candle] = []
         cursor = start_time

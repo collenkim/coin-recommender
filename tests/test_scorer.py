@@ -40,7 +40,7 @@ def seed_market(store: DataStore, market: str, bars: int = 60) -> None:
     store.upsert_candles(SOURCE, market, "1h", [candle(market, i, 100.0) for i in range(bars)])
 
 
-def stats(n=5, hit_count=3, hit_rate=None, lower=0.3) -> SignalStats:
+def stats(n=20, hit_count=12, hit_rate=None, lower=0.3) -> SignalStats:
     return SignalStats(
         market="X",
         n=n,
@@ -120,13 +120,14 @@ def test_market_below_the_hit_rate_floor_is_skipped(tmp_path):
 
 
 def test_recommendations_are_ranked_by_confidence_lower_bound_not_raw_hit_rate(tmp_path):
-    """표본 3건에 3승(적중률 100%)이 표본 20건에 14승보다 위에 오면 안 된다."""
+    """표본 10건에 60%가 표본 100건에 55%보다 위에 오면 안 된다 -- 적중률 필터는 원시
+    비율을 쓰지만 정렬은 신뢰 하한을 쓴다."""
     store = make_store(tmp_path)
     seed_strong_bull(store)
     seed_market(store, "THINUSDT")
     seed_market(store, "DEEPUSDT")
-    thin = stats(n=3, hit_count=3, lower=0.44)
-    deep = stats(n=20, hit_count=14, lower=0.48)
+    thin = stats(n=10, hit_count=6, lower=0.31)   # 60%지만 표본 10건
+    deep = stats(n=100, hit_count=55, lower=0.45)  # 55%지만 표본 100건
     with patch("src.scorer.entry_signal", return_value=True), patch(
         "src.scorer.compute_signal_stats", side_effect=[thin, deep]
     ):

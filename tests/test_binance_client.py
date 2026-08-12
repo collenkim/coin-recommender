@@ -139,3 +139,13 @@ def test_get_klines_since_returns_empty_when_no_history():
     client = BinanceClient()
     with patch("src.binance_client.requests.get", return_value=mock_response([])):
         assert client.get_klines_since("BTCUSDT", "1h", datetime.fromtimestamp(0, tz=timezone.utc)) == []
+
+
+def test_pagination_guard_covers_the_configured_lookback():
+    """상한이 모자라면 예외 없이 조용히 잘려, 설정한 lookback보다 짧은 이력으로 백테스트가 돈다.
+    5년치 1시간봉 = 43,800봉 = 44페이지."""
+    from src.binance_client import _MAX_LIMIT, _MAX_PAGES
+    from src.config import settings
+
+    needed_pages = settings.backtest_lookback_days * 24 / _MAX_LIMIT
+    assert _MAX_PAGES > needed_pages, f"{_MAX_PAGES}페이지로는 {needed_pages:.0f}페이지가 필요한 lookback을 못 채운다"

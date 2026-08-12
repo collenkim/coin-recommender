@@ -164,7 +164,9 @@ def test_binance_collection_backfills_when_stored_history_is_shallower_than_look
 
 def test_binance_collection_uses_incremental_once_history_is_deep_enough():
     mock_store = MagicMock()
-    mock_store.get_first_candle_time.return_value = datetime.now(timezone.utc) - timedelta(days=999)
+    mock_store.get_first_candle_time.return_value = datetime.now(timezone.utc) - timedelta(
+        days=settings.backtest_lookback_days + 100
+    )
     mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(hours=2)
     mock_binance = MagicMock()
     mock_binance.get_klines.return_value = []

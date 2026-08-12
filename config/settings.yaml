@@ -6,7 +6,7 @@ db_path: "data/coin_recommender.db"
 top_n_candidates: 20
 recommendations_per_exchange: 5  # 거래소(업비트/바이낸스)별 최종 추천 개수 상한
 bootstrap_min_candles: 100
-backtest_lookback_days: 365
+backtest_lookback_days: 1825
 http_timeout_seconds: 10.0
 http_max_retries: 3
 upbit_request_delay_seconds: 0.1
