@@ -26,6 +26,13 @@ KIJUN_RISE_BARS = 6
 REGIME_BARS_30D = 180
 STRONG_BULL_30D = 0.20
 REBOUND_OFF_LOW = 0.10
+# 1200봉 x 4h = 200일. 반등은 **장기 상승 추세 안의 조정 후 반등**일 때만 인정한다.
+# 장기 하락 추세의 반등은 거짓 반등이라는 판단이며, 알트는 BTC/ETH에 끌려다니므로
+# BTC가 구조적 하락 국면이면 알트가 독립적으로 오를 수 없다는 구조적 근거를 따른다.
+REGIME_MA_BARS = 1200
+# 200일 이동평균 워밍업분. BTC 4시간봉은 이만큼 더 깊게 수집해야 백테스트 구간 전체에서
+# 반등 판정이 가능하다.
+REGIME_WARMUP_DAYS = 210
 STRONG_BULL = "strong_bull"
 REBOUND = "rebound"
 
@@ -85,22 +92,39 @@ def build_regime_series(btc_candles_4h: list[Candle]) -> list[tuple[datetime, st
 
     라이브와 백테스트가 같은 함수를 쓰므로 두 경로가 어긋날 수 없다 -- 이 코드베이스에서
     반복적으로 문제가 됐던 지점이라 의도적으로 하나로 둔다."""
+    closes = [c.close for c in btc_candles_4h]
+    # 200일 이동평균을 매 봉마다 1,200개씩 더하면 O(n x 1200)이 된다. 누적합으로 O(n).
+    prefix = [0.0]
+    for close in closes:
+        prefix.append(prefix[-1] + close)
+
     series: list[tuple[datetime, str | None]] = []
     for i, candle in enumerate(btc_candles_4h):
         if i < REGIME_BARS_30D:
             series.append((close_time(candle), None))
             continue
-        close = candle.close
-        ret_30d = close / btc_candles_4h[i - REGIME_BARS_30D].close - 1
-        low_30d = min(c.close for c in btc_candles_4h[i - REGIME_BARS_30D + 1 : i + 1])
-        off_low = close / low_30d - 1
+        close = closes[i]
+        ret_30d = close / closes[i - REGIME_BARS_30D] - 1
+        off_low = close / min(closes[i - REGIME_BARS_30D + 1 : i + 1]) - 1
         if ret_30d > STRONG_BULL_30D:
             series.append((close_time(candle), STRONG_BULL))
-        elif ret_30d <= 0 and off_low > REBOUND_OFF_LOW:
+        elif ret_30d <= 0 and off_low > REBOUND_OFF_LOW and _above_long_term_trend(closes, prefix, i):
             series.append((close_time(candle), REBOUND))
         else:
             series.append((close_time(candle), None))
     return series
+
+
+def _above_long_term_trend(closes: list[float], prefix: list[float], i: int) -> bool:
+    """BTC가 200일 이동평균 위인가. 확인할 이력이 없으면 False -- 장기 추세를 모르는 채로
+    반등에 진입하지 않는다.
+
+    반등 조건에만 적용한다. 강한 상승장(30일 +20% 초과)은 그 자체로 추세가 확인되므로
+    이 조건을 요구하지 않으며, 짧게 열렸다 닫히는 개방 구간도 그대로 통과한다."""
+    if i < REGIME_MA_BARS:
+        return False
+    moving_average = (prefix[i + 1] - prefix[i + 1 - REGIME_MA_BARS]) / REGIME_MA_BARS
+    return closes[i] > moving_average
 
 
 def regime_as_of(series: list[tuple[datetime, str | None]], timestamp: datetime) -> str | None:

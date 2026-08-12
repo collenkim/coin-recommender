@@ -7,6 +7,7 @@ from src.backtest import (
     FORWARD_BARS_1H,
     REBOUND,
     REGIME_BARS_30D,
+    REGIME_MA_BARS,
     STOP_LOSS,
     STRONG_BULL,
     TARGET_RETURN,
@@ -69,11 +70,43 @@ def test_regime_is_strong_bull_when_btc_gained_more_than_20_percent_over_30_days
     assert series[-1][1] == STRONG_BULL
 
 
-def test_regime_is_rebound_when_btc_is_down_over_30_days_but_up_off_its_low():
-    # 100 -> 82.2로 하락(30일 수익률 음수)한 뒤 92.0으로 반등(저점 대비 +11.9%)
+def _rebound_closes(long_term_start: float) -> list[float]:
+    """장기 구간을 `long_term_start`에서 100까지 이동시킨 뒤, 최근 30일에서 82.1까지 밀렸다가
+    92.0으로 반등하는 형태. 장기 방향만 인자로 뒤집을 수 있게 만든다."""
+    step = (100.0 - long_term_start) / (REGIME_MA_BARS - REGIME_BARS_30D)
+    closes = [long_term_start + i * step for i in range(REGIME_MA_BARS - REGIME_BARS_30D + 1)]
+    closes += [100.0 - k * 0.1 for k in range(1, REGIME_BARS_30D)]
+    closes.append(92.0)
+    return closes
+
+
+def test_regime_is_rebound_only_inside_a_long_term_uptrend():
+    """장기 상승 추세 안의 조정 후 반등."""
+    series = build_regime_series(_btc_series(_rebound_closes(long_term_start=50.0)))
+    assert series[-1][1] == REBOUND
+
+
+def test_rebound_is_rejected_when_btc_is_below_its_200_day_average():
+    """장기 하락 추세의 반등은 거짓 반등으로 보고 진입하지 않는다 -- 알트는 BTC에 끌려다니므로
+    BTC가 구조적 하락 국면이면 알트가 독립적으로 오를 수 없다.
+
+    30일 조건(수익률 음수, 저점 대비 +11%)은 위 테스트와 똑같이 만족한다. 장기 방향만 다르다."""
+    series = build_regime_series(_btc_series(_rebound_closes(long_term_start=200.0)))
+    assert series[-1][1] is None
+
+
+def test_rebound_is_rejected_without_enough_history_to_judge_the_long_term_trend():
     closes = [100.0] + [100.0 - i * 0.1 for i in range(REGIME_BARS_30D - 1)] + [92.0]
     series = build_regime_series(_btc_series(closes))
-    assert series[-1][1] == REBOUND
+    assert series[-1][1] is None  # 200일 이동평균을 계산할 이력이 없다
+
+
+def test_strong_bull_does_not_require_the_long_term_trend_check():
+    """강한 상승장은 그 자체로 추세가 확인되므로 200일선 조건을 요구하지 않는다 --
+    짧게 열렸다 닫히는 개방 구간을 놓치지 않기 위함이다."""
+    closes = [100.0] + [100.0 + i * 0.2 for i in range(REGIME_BARS_30D)]
+    series = build_regime_series(_btc_series(closes))
+    assert series[-1][1] == STRONG_BULL  # 이력이 200일에 한참 못 미쳐도 통과
 
 
 def test_regime_is_none_in_a_flat_market():

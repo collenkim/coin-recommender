@@ -3,7 +3,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from src.backtest import evaluate_outcome
+from src.backtest import REGIME_WARMUP_DAYS, evaluate_outcome
 from src.binance_client import BinanceClient
 from src.config import settings
 from src.data_store import DataStore
@@ -31,7 +31,11 @@ class PipelineRunResult:
 
 
 def _collect_and_store_binance(
-    data_store: DataStore, binance_client: BinanceClient, symbol: str, timeframes: tuple[str, ...] = (REGIME_TIMEFRAME,)
+    data_store: DataStore,
+    binance_client: BinanceClient,
+    symbol: str,
+    timeframes: tuple[str, ...] = (REGIME_TIMEFRAME,),
+    lookback_days: int | None = None,
 ) -> None:
     """BR9 (data-pipeline): backfill-or-incremental Binance collection, per-timeframe failure isolated.
 
@@ -44,7 +48,7 @@ def _collect_and_store_binance(
     `first <= target_start`, so it re-fetches its (short) history each run. That is a handful of
     extra requests per hour, well inside Binance's public rate limit.
     """
-    target_start = datetime.now(timezone.utc) - timedelta(days=settings.backtest_lookback_days)
+    target_start = datetime.now(timezone.utc) - timedelta(days=lookback_days or settings.backtest_lookback_days)
     for timeframe in timeframes:
         try:
             first_time = data_store.get_first_candle_time(SOURCE, symbol, timeframe)
@@ -121,8 +125,14 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
         for symbol in candidates:
             _collect_and_store_binance(store, binance_client, symbol, timeframes=("1h",))
         # BTC 4시간봉은 레짐 판정 전용 (BR20). 후보 코인의 4시간봉은 진입 조건이 1시간봉만
-        # 쓰게 되면서 더는 필요하지 않다.
-        _collect_and_store_binance(store, binance_client, BTC_MARKET)
+        # 쓰게 되면서 더는 필요하지 않다. 200일 이동평균 워밍업분을 더 깊게 받는다 -- 그만큼이
+        # 없으면 백테스트 앞구간에서 반등 판정이 불가능해져 표본이 잘린다.
+        _collect_and_store_binance(
+            store,
+            binance_client,
+            BTC_MARKET,
+            lookback_days=settings.backtest_lookback_days + REGIME_WARMUP_DAYS,
+        )
 
         regime = check_market_regime(store)
         recommendations = generate_recommendations(candidates, store)[: settings.recommendations_per_exchange]
