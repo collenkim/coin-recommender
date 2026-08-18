@@ -111,3 +111,11 @@
 - **Current Stage**: 바이낸스 전용 재설계 완료, 배포 대기 (2026-08-11). Operations remains a placeholder with no defined steps (per core-workflow.md)
 - **Next Stage**: None — all delivered work approved. Future work would re-enter as a new AI-DLC request (e.g. "Using AI-DLC, add X")
 - **Status**: Done
+
+### 🔁 Follow-up Request (2026-08-18): BTC/ETH 강세장 구분 문구 출력
+- [x] Requirements Analysis — 요청의 갈림길 4개를 질문 파일로 정리(`requirement-verification-questions.md`). 사용자가 구간 정의를 직접 지시("일 주 30일, 월, 년 데이터 전체")하여 5구간(1일/7일/30일/90일/365일)으로 확정. **적용 범위는 표시 전용으로 판단** — 요청이 "문구도 바꿔서 출력"이었고, 게이트를 바꾸면 발표 중인 적중률이 측정 조건과 어긋남
+- [x] Functional Design — Unit 2 analytics-backtest BR23(5구간 모멘텀, 자산별 강/약/비상승, BTC·ETH 합의 규칙), Unit 3 api-service BR23(알림 문구·API 노출). Unit 1 data-pipeline은 규칙 변경 없음(ETHUSDT 4h 수집 추가뿐)
+- [x] Code Generation — `src/market_phase.py`(신규), `src/scorer.py`(`check_market_phase`, `PHASE_MARKETS`), `src/pipeline.py`(ETH 수집 + phase 전달), `src/notifier.py`(문구 렌더링), `src/api.py`(`market_phase` 응답 필드). 테스트 22개 추가, 전체 **194/194 통과**
+- [x] 측정으로 규칙 1건 기각 — 느슨한 결합("하나라도 상승이면 약상승장")을 먼저 구현했다가 라이브 데이터에서 BTC 365일 -45.0%인데 헤드라인이 "약상승장"으로 나오는 것을 확인하고 합의 요구 규칙으로 교체
+- [x] 실측 기록 — 강상승장 4% / 약상승장 26% / 상승장 아님 70%, 그 시점 BTC 30일 중앙값 +36.0% / +12.1% / -3.5%로 단조 분리. 예측력은 BR20-c 기준(에피소드 15건 중 양수 9건, 6건이 2024-11 편중)에 걸려 **주장하지 않음**
+- [x] Verified live — 실 DB 백업 후 ETHUSDT 4h 12,209봉 신규 수집, 실제 발송 메시지 렌더링 확인, `GET /recommendations` 200 + `market_phase` 정상, `GET /health` 200

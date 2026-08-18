@@ -5,6 +5,7 @@ import requests
 
 from src.backtest import STOP_LOSS, TARGET_RETURN
 from src.data_store import ENTRY_TOUCHED, STOP_HIT, TARGET_HIT
+from src.market_phase import NOT_BULL, STRONG_BULL, WEAK_BULL
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +78,48 @@ def _format_price_alert(now: datetime, events: list) -> str:
     return header + "\n\n" + "\n\n".join(blocks)
 
 
-def _format_message(run_time: datetime, recommendations: list) -> str:
-    """BR5: Korean notification message format. 상단에 추천 개수, 종목마다 번호 붙인 단락."""
+# 문구는 **지금 상태의 설명**이지 전망이 아니다 (BR23) -- "오른다"는 뜻이 읽히는 표현을 쓰지 않는다.
+_PHASE_HEADLINE = {
+    STRONG_BULL: "강상승장 — BTC·ETH 둘 다 상승 모멘텀이 강합니다",
+    WEAK_BULL: "약상승장 — BTC·ETH 둘 다 상승 중이지만 강세까지는 아닙니다",
+    NOT_BULL: "상승장 아님 — BTC·ETH가 함께 상승하고 있지는 않습니다",
+}
+_ASSET_LABELS = {STRONG_BULL: "강상승", WEAK_BULL: "약상승", NOT_BULL: "비상승"}
+# 사람이 읽는 순서. 짧은 구간부터 긴 구간으로 늘어놓아야 추세가 한눈에 보인다.
+_HORIZON_LABELS = (("1d", "일"), ("7d", "주"), ("30d", "30일"), ("90d", "월"), ("365d", "년"))
+
+
+def _phase_lines(phase) -> list[str]:
+    """BR23: 시장 국면 문구. 판정이 없으면(이력 부족) 아무 줄도 넣지 않는다 -- 모르는 것을
+    "상승장 아님"으로 적으면 데이터 결손이 시장 판단으로 둔갑한다."""
+    if phase is None:
+        return []
+    lines = [_PHASE_HEADLINE[phase.phase]]
+    for asset in phase.assets:
+        moves = "  ".join(
+            f"{text} {asset.returns[key]:+.1%}" for key, text in _HORIZON_LABELS if key in asset.returns
+        )
+        lines.append(f"· {asset.market} {_ASSET_LABELS[asset.label]}:  {moves}")
+    return lines
+
+
+def _format_message(run_time: datetime, recommendations: list, phase=None) -> str:
+    """BR5/BR23: Korean notification message format. 상단에 추천 개수와 시장 국면, 종목마다 번호 붙인 단락.
+
+    국면 문구는 추천이 0개일 때도 넣는다 -- 그게 없으면 "이번 회차 추천 없음"이 게이트가 닫혀서인지
+    통과한 코인이 없어서인지 구분되지 않는다."""
     stamp = f"{_kst(run_time, '%Y-%m-%d %H:%M')} KST"
+    phase_block = _phase_lines(phase)
     if not recommendations:
-        return f"[coin-recommender] 추천 코인 0개\n{stamp}\n\n이번 회차 추천 없음"
+        parts = [f"[coin-recommender] 추천 코인 0개\n{stamp}"]
+        if phase_block:
+            parts.append("\n".join(phase_block))
+        parts.append("이번 회차 추천 없음")
+        return "\n\n".join(parts)
 
     header = f"[coin-recommender] 추천 코인 {len(recommendations)}개\n{stamp}"
-    blocks = [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
+    blocks = ["\n".join(phase_block)] if phase_block else []
+    blocks.extend(_recommendation_block(i, r) for i, r in enumerate(recommendations, 1))
     return header + "\n\n" + "\n\n".join(blocks)
 
 
@@ -96,11 +131,12 @@ def send_notification(
     discord_webhook_url: str | None,
     slack_webhook_url: str | None = None,
     timeout_seconds: float = 10.0,
+    phase=None,
 ) -> None:
     """BR4: sends to every configured channel independently; a failure on one channel does not
     prevent the others from being attempted. Caller (Pipeline) treats this as best-effort (BR3)."""
     _dispatch(
-        _format_message(run_time, recommendations),
+        _format_message(run_time, recommendations, phase),
         telegram_bot_token,
         telegram_chat_id,
         discord_webhook_url,

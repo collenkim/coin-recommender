@@ -262,3 +262,85 @@ def test_price_alert_goes_to_every_configured_channel():
         )
 
     assert mock_post.call_count == 3
+
+
+# --- 시장 국면 문구 (BR23) ---
+
+def _phase(phase_label, *assets):
+    """MarketPhase/AssetMomentum 대역. notifier는 속성만 읽으므로 실제 타입이 필요 없다."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        phase=phase_label,
+        assets=[
+            SimpleNamespace(market=market, label=label, returns=returns)
+            for market, label, returns in assets
+        ],
+    )
+
+
+_FULL = {"1d": 0.012, "7d": 0.034, "30d": 0.256, "90d": 0.41, "365d": 1.2}
+
+
+def _send_with_phase(recs, phase):
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook", phase=phase)
+    return mock_post.call_args.kwargs["json"]["content"]
+
+
+def test_strong_bull_phrase_differs_from_weak_bull_phrase():
+    strong = _send_with_phase([], _phase("strong_bull", ("BTCUSDT", "strong_bull", _FULL)))
+    weak = _send_with_phase([], _phase("weak_bull", ("BTCUSDT", "weak_bull", _FULL)))
+    assert "강상승장" in strong
+    assert "약상승장" in weak
+    assert "약상승장" not in strong
+
+
+def test_not_bull_phrase_is_reported_too():
+    message = _send_with_phase([], _phase("not_bull", ("BTCUSDT", "not_bull", _FULL)))
+    assert "상승장 아님" in message
+
+
+def test_phase_line_appears_even_with_zero_recommendations():
+    """게이트가 닫혀 0건인지, 통과한 코인이 없어 0건인지 구분되게 하는 것이 이 줄의 목적이다."""
+    message = _send_with_phase([], _phase("strong_bull", ("BTCUSDT", "strong_bull", _FULL)))
+    assert "추천 코인 0개" in message
+    assert "강상승장" in message
+    assert "이번 회차 추천 없음" in message
+
+
+def test_phase_lists_btc_and_eth_separately_with_all_five_horizons():
+    message = _send_with_phase(
+        [],
+        _phase(
+            "weak_bull",
+            ("BTCUSDT", "strong_bull", _FULL),
+            ("ETHUSDT", "not_bull", {"1d": -0.01, "7d": -0.02, "30d": -0.05, "90d": -0.1, "365d": -0.2}),
+        ),
+    )
+    assert "· BTCUSDT 강상승:" in message
+    assert "· ETHUSDT 비상승:" in message
+    for horizon in ("일", "주", "30일", "월", "년"):
+        assert horizon in message
+    assert "+25.6%" in message  # BTC 30일
+    assert "-20.0%" in message  # ETH 365일
+
+
+def test_phase_line_is_omitted_when_phase_is_unknown():
+    """이력 부족을 '상승장 아님'으로 적으면 데이터 결손이 시장 판단으로 둔갑한다."""
+    message = _send_with_phase([], None)
+    assert "상승장" not in message
+    assert "이번 회차 추천 없음" in message
+
+
+def test_recommendations_still_render_below_the_phase_line():
+    recs = [FakeRecommendation("AAAUSDT", 0.01, 5, 3, source="binance")]
+    message = _send_with_phase(recs, _phase("strong_bull", ("BTCUSDT", "strong_bull", _FULL)))
+    assert message.index("강상승장") < message.index("(1) AAAUSDT")
+    assert message.startswith("[coin-recommender] 추천 코인 1개")
+
+
+def test_phase_is_optional_so_existing_callers_are_unaffected():
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_notification([], RUN_TIME, None, None, "https://discord.example/webhook")
+    assert "이번 회차 추천 없음" in mock_post.call_args.kwargs["json"]["content"]

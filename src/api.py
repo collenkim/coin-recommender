@@ -11,6 +11,7 @@ from src.config import settings
 from src.data_store import DataStore
 from src.pipeline import AlreadyRunningError, run_recommendation_pipeline
 from src.scheduler import start_scheduler, stop_scheduler
+from src.scorer import check_market_phase
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,26 @@ class RunSummary(BaseModel):
     recommendations: list[RecommendationOut]
 
 
+class AssetMomentumOut(BaseModel):
+    market: str
+    label: str  # strong_bull | weak_bull | not_bull
+    returns: dict[str, float]  # 1d / 7d / 30d / 90d / 365d
+
+
+class MarketPhaseOut(BaseModel):
+    """BR23: 표시 전용 시장 국면. `regime_bullish`(진입 게이트)와는 별개 기준이므로 둘이
+    어긋날 수 있다 -- 게이트는 BTC 30일 단독, 국면은 BTC/ETH 5구간이다."""
+
+    phase: str  # strong_bull | weak_bull | not_bull
+    assets: list[AssetMomentumOut]
+
+
 class RecommendationsResponse(RunSummary):
     expired: bool = False
     history: list[RunSummary] | None = None
+    # 현재 시각 기준 국면이므로 과거 회차(history)에는 붙이지 않는다 -- 붙이면 지난 회차가
+    # 그때의 국면이었던 것처럼 읽힌다.
+    market_phase: MarketPhaseOut | None = None
 
 
 class HealthResponse(BaseModel):
@@ -98,6 +116,15 @@ def _to_recommendation_out(r) -> RecommendationOut:
     )
 
 
+def _to_market_phase_out(phase) -> MarketPhaseOut | None:
+    if phase is None:
+        return None
+    return MarketPhaseOut(
+        phase=phase.phase,
+        assets=[AssetMomentumOut(market=a.market, label=a.label, returns=a.returns) for a in phase.assets],
+    )
+
+
 def _to_run_summary(run) -> RunSummary:
     return RunSummary(
         run_time=run.run_time,
@@ -123,21 +150,32 @@ def get_recommendations(limit: int = 1) -> RecommendationsResponse:
     record of past runs rather than something to act on."""
     store = DataStore(settings.db_path)
     now = datetime.now(timezone.utc)
+    # BR23: 저장된 회차 값이 아니라 지금 캔들에서 계산한다 -- 국면은 회차의 속성이 아니라
+    # 현재 시장의 속성이고, 그래서 DB 스키마도 건드리지 않는다.
+    phase = _to_market_phase_out(check_market_phase(store))
 
     if limit <= 1:
         latest = store.get_latest_run()
         if latest is None:
-            return RecommendationsResponse(run_time=None, regime_bullish=False, recommendations=[])
+            return RecommendationsResponse(
+                run_time=None, regime_bullish=False, recommendations=[], market_phase=phase
+            )
         summary = _to_run_summary(latest)
         if _is_expired(latest.run_time, now):
             return RecommendationsResponse(
-                run_time=summary.run_time, regime_bullish=summary.regime_bullish, recommendations=[], expired=True
+                run_time=summary.run_time,
+                regime_bullish=summary.regime_bullish,
+                recommendations=[],
+                expired=True,
+                market_phase=phase,
             )
-        return RecommendationsResponse(**summary.model_dump())
+        return RecommendationsResponse(**summary.model_dump(), market_phase=phase)
 
     runs = store.get_recent_runs(limit=limit)
     if not runs:
-        return RecommendationsResponse(run_time=None, regime_bullish=False, recommendations=[], history=[])
+        return RecommendationsResponse(
+            run_time=None, regime_bullish=False, recommendations=[], history=[], market_phase=phase
+        )
     history = [_to_run_summary(r) for r in runs]
     expired = _is_expired(runs[0].run_time, now)
     latest_recommendations = [] if expired else history[0].recommendations
@@ -147,6 +185,7 @@ def get_recommendations(limit: int = 1) -> RecommendationsResponse:
         recommendations=latest_recommendations,
         expired=expired,
         history=history,
+        market_phase=phase,
     )
 
 
@@ -160,6 +199,7 @@ def trigger_run() -> RecommendationsResponse:
         run_time=result.run_time,
         regime_bullish=result.regime is not None,
         recommendations=[_to_recommendation_out(r) for r in result.recommendations],
+        market_phase=_to_market_phase_out(result.phase),
     )
 
 

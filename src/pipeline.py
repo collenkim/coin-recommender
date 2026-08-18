@@ -10,7 +10,14 @@ from src.data_store import DataStore
 from src.market_selector import BinanceMarketSelector
 from src.monitor import check_price_events
 from src.notifier import send_notification, send_price_alert
-from src.scorer import BTC_MARKET, REGIME_TIMEFRAME, SOURCE, check_market_regime, generate_recommendations
+from src.scorer import (
+    PHASE_MARKETS,
+    REGIME_TIMEFRAME,
+    SOURCE,
+    check_market_phase,
+    check_market_regime,
+    generate_recommendations,
+)
 
 _EVALUATION_WINDOW_HOURS = 24
 
@@ -28,6 +35,7 @@ class PipelineRunResult:
     run_time: datetime
     regime: str | None
     recommendations: list
+    phase: object | None = None  # BR23 MarketPhase, 표시 전용
 
 
 def _collect_and_store_binance(
@@ -127,14 +135,17 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
         # BTC 4시간봉은 레짐 판정 전용 (BR20). 후보 코인의 4시간봉은 진입 조건이 1시간봉만
         # 쓰게 되면서 더는 필요하지 않다. 200일 이동평균 워밍업분을 더 깊게 받는다 -- 그만큼이
         # 없으면 백테스트 앞구간에서 반등 판정이 불가능해져 표본이 잘린다.
-        _collect_and_store_binance(
-            store,
-            binance_client,
-            BTC_MARKET,
-            lookback_days=settings.backtest_lookback_days + REGIME_WARMUP_DAYS,
-        )
+        # ETH 4시간봉은 BR23 문구 판정 전용이다 -- 추천 후보에는 여전히 들어가지 않는다(BR8).
+        for symbol in PHASE_MARKETS:
+            _collect_and_store_binance(
+                store,
+                binance_client,
+                symbol,
+                lookback_days=settings.backtest_lookback_days + REGIME_WARMUP_DAYS,
+            )
 
         regime = check_market_regime(store)
+        phase = check_market_phase(store)
         recommendations = generate_recommendations(candidates, store)[: settings.recommendations_per_exchange]
 
         store.save_run(now, regime is not None, recommendations)
@@ -148,12 +159,13 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
                 settings.discord_webhook_url,
                 settings.slack_webhook_url,
                 timeout_seconds=settings.http_timeout_seconds,
+                phase=phase,
             )
         except Exception:
             logger.warning("Notification step failed; pipeline run is still considered successful", exc_info=True)
 
         evaluate_pending_outcomes(store, now)
 
-        return PipelineRunResult(run_time=now, regime=regime, recommendations=recommendations)
+        return PipelineRunResult(run_time=now, regime=regime, recommendations=recommendations, phase=phase)
     finally:
         _lock.release()

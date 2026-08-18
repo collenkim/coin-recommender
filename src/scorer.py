@@ -10,10 +10,14 @@ from src.backtest import (
 )
 from src.data_store import DataStore, close_time
 from src.features import compute_ichimoku
+from src.market_phase import MarketPhase, current_phase
 
 SOURCE = "binance"
 BTC_MARKET = "BTCUSDT"
+ETH_MARKET = "ETHUSDT"
 REGIME_TIMEFRAME = "4h"
+# 문구 판정에 쓰는 자산. 추천 후보에서는 제외돼 있지만(BR8) 시장 국면의 기준으로는 수집한다.
+PHASE_MARKETS = (BTC_MARKET, ETH_MARKET)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,16 @@ def check_market_regime(data_store: DataStore) -> str | None:
     안전하다 (Unit 1 BR7의 graceful degradation과 같은 방향)."""
     series = _regime_series(data_store)
     return series[-1][1] if series else None
+
+
+def check_market_phase(data_store: DataStore) -> MarketPhase | None:
+    """BR23: BTC/ETH 5구간 모멘텀으로 본 현재 국면 (표시 전용, 진입 여부와 무관).
+
+    `check_market_regime`과 나란히 두되 서로 호출하지 않는다 -- 문구가 게이트에 영향을 주는 경로를
+    아예 만들지 않기 위해서다."""
+    return current_phase(
+        {market: data_store.get_candles(SOURCE, market, REGIME_TIMEFRAME) for market in PHASE_MARKETS}
+    )
 
 
 def generate_recommendations(candidates: list[str], data_store: DataStore) -> list[Recommendation]:
