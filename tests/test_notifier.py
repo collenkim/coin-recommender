@@ -200,7 +200,7 @@ def test_each_recommendation_is_its_own_numbered_paragraph():
         send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook")
 
     message = mock_post.call_args.kwargs["json"]["content"]
-    short_body = message.split("[단기]", 1)[1].split("[장기]", 1)[0]
+    short_body = message.split("[기존]", 1)[1]
     blocks = [b for b in short_body.split("\n\n") if b.strip().startswith("(")]
     assert len(blocks) == 3  # 종목마다 빈 줄로 분리된 한 단락
     for order in (1, 2, 3):
@@ -291,12 +291,14 @@ def _send_with_phase(recs, phase):
     return mock_post.call_args.kwargs["json"]["content"]
 
 
-def test_strong_bull_phrase_differs_from_weak_bull_phrase():
+def test_each_phase_grade_has_its_own_headline():
+    """BR25: 강세장 / 상승장 / 약상승장 3단계가 각각 다른 문구로 나가야 한다."""
     strong = _send_with_phase([], _phase("strong_bull", ("BTCUSDT", "strong_bull", _FULL)))
+    bull = _send_with_phase([], _phase("bull", ("BTCUSDT", "weak_bull", _FULL)))
     weak = _send_with_phase([], _phase("weak_bull", ("BTCUSDT", "weak_bull", _FULL)))
-    assert "강상승장" in strong
+    assert "강세장" in strong
+    assert "상승장" in bull and "강세장" not in bull
     assert "약상승장" in weak
-    assert "약상승장" not in strong
 
 
 def test_not_bull_phrase_is_reported_too():
@@ -308,7 +310,7 @@ def test_phase_line_appears_even_with_zero_recommendations():
     """게이트가 닫혀 0건인지, 통과한 코인이 없어 0건인지 구분되게 하는 것이 이 줄의 목적이다."""
     message = _send_with_phase([], _phase("strong_bull", ("BTCUSDT", "strong_bull", _FULL)))
     assert "추천 코인 0개" in message
-    assert "강상승장" in message
+    assert "강세장" in message
     assert "조건을 만족한 종목 없음" in message
 
 
@@ -332,14 +334,14 @@ def test_phase_lists_btc_and_eth_separately_with_all_five_horizons():
 def test_phase_line_is_omitted_when_phase_is_unknown():
     """이력 부족을 '상승장 아님'으로 적으면 데이터 결손이 시장 판단으로 둔갑한다."""
     message = _send_with_phase([], None)
-    assert "강상승장" not in message and "약상승장" not in message
+    assert "강세장" not in message and "약상승장" not in message
     assert "조건을 만족한 종목 없음" in message
 
 
 def test_recommendations_still_render_below_the_phase_line():
     recs = [FakeRecommendation("AAAUSDT", 0.01, 5, 3, source="binance")]
     message = _send_with_phase(recs, _phase("strong_bull", ("BTCUSDT", "strong_bull", _FULL)))
-    assert message.index("강상승장") < message.index("(1) AAAUSDT")
+    assert message.index("강세장") < message.index("(1) AAAUSDT")
     assert message.startswith("[coin-recommender] 추천 코인 1개")
 
 

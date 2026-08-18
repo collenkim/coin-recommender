@@ -7,16 +7,12 @@ from src.backtest import (
     build_regime_series,
     compute_signal_stats,
     entry_signal,
+    wilson_lower,
 )
 from src.data_store import DataStore, close_time
 from src.features import compute_ichimoku
-from src.long_track import (
-    LONG_MIN_SAMPLES,
-    compute_long_stats,
-    cycle_position,
-    long_entry_signal,
-)
-from src.market_phase import MarketPhase, current_phase
+from src.market_phase import OPEN_PHASES, MarketPhase, current_phase
+from src.tracks import TRACKS, TrackSpec, compute_track_stats, latest_entry
 
 SOURCE = "binance"
 BTC_MARKET = "BTCUSDT"
@@ -24,10 +20,6 @@ ETH_MARKET = "ETHUSDT"
 REGIME_TIMEFRAME = "4h"
 # 문구 판정에 쓰는 자산. 추천 후보에서는 제외돼 있지만(BR8) 시장 국면의 기준으로는 수집한다.
 PHASE_MARKETS = (BTC_MARKET, ETH_MARKET)
-
-
-SHORT_TRACK = "short"
-LONG_TRACK = "long"
 
 
 @dataclass(frozen=True)
@@ -42,7 +34,10 @@ class Recommendation:
     entry_time: datetime | None = None
     entry_price: float | None = None
     max_drawdown: float | None = None
-    track: str = SHORT_TRACK
+    # BR25: 기존 레짐 게이트 트랙(BR18~BR21)은 "regime"으로 구분한다. BR25의 "short"(단기)와
+    # 목표·손절이 같지만 보유가 24시간 vs 12시간으로 달라, 같은 키를 쓰면 감시가 12시간 만에
+    # 끊긴다.
+    track: str = "regime"
 
 
 def _regime_series(data_store: DataStore) -> list[tuple[datetime, str | None]]:
@@ -106,43 +101,51 @@ def generate_recommendations(candidates: list[str], data_store: DataStore) -> li
     return sorted(recommendations, key=lambda r: r.hit_rate_lower, reverse=True)
 
 
-def generate_long_recommendations(
-    candidates: list[str], data_store: DataStore, now: datetime
+def generate_track_recommendations(
+    candidates: list[str], data_store: DataStore, spec: TrackSpec
 ) -> list[Recommendation]:
-    """BR24: 장기 트랙. 반감기 사이클 게이트 -> 4시간봉 진입 조건 -> 같은 연차 표본 하한.
+    """BR25: 한 트랙의 추천. 진입 타임프레임의 가장 최근 마감봉이 구름대 돌파면 후보가 되고,
+    같은 조건의 과거 성적이 표본 하한을 넘으면 추천이 된다.
 
-    단기 트랙과 나란히 돌지만 서로의 게이트·수치를 공유하지 않는다. 적중률 문턱을 두지 않는 이유는
-    전체가 42.0%인데 단기의 45% 문턱을 적용하면 표본 13~74건에서 상위값을 고르는 셈이라, 단기
-    트랙 워크포워드에서 실측된 선택 편향(표시 45% vs 실제 38.9%)을 그대로 재현하기 때문이다."""
-    position = cycle_position(now)
-    if position is None or not position.is_open:
-        return []
-
+    적중률 문턱을 두지 않는다 -- 단기 트랙 워크포워드에서 실측된 선택 편향(표시 45% vs 실제 38.9%)을
+    반복하지 않기 위해서다. 정렬만 Wilson 하한으로 한다."""
     recommendations = []
     for market in candidates:
-        candles_4h = data_store.get_candles(SOURCE, market, REGIME_TIMEFRAME)
-        points_4h = compute_ichimoku(candles_4h)
-        if not points_4h or not long_entry_signal(candles_4h, points_4h, len(points_4h) - 1):
+        candles = data_store.get_candles(SOURCE, market, spec.timeframe)
+        points = compute_ichimoku(candles)
+        index = latest_entry(candles, points)
+        if index is None:
             continue
 
-        stats = compute_long_stats(market, candles_4h, points_4h, position.year)
-        if stats.n < LONG_MIN_SAMPLES or stats.hit_rate is None:
+        stats = compute_track_stats(candles, points, spec)
+        if stats["n"] < spec.min_samples or stats["hit_rate"] is None:
             continue
 
-        entry_candle = candles_4h[-1]
+        entry_candle = candles[index]
         recommendations.append(
             Recommendation(
                 market=market,
-                n=stats.n,
-                hit_count=stats.hit_count,
-                hit_rate=stats.hit_rate,
-                hit_rate_lower=stats.hit_rate_lower,
-                expected_return=stats.expected_return,
+                n=stats["n"],
+                hit_count=stats["hit_count"],
+                hit_rate=stats["hit_rate"],
+                hit_rate_lower=wilson_lower(stats["hit_count"], stats["n"]),
+                expected_return=stats["expected_return"],
                 entry_time=close_time(entry_candle),
                 entry_price=entry_candle.close,
-                max_drawdown=stats.max_drawdown,
-                track=LONG_TRACK,
+                max_drawdown=stats["max_drawdown"],
+                track=spec.key,
             )
         )
-
     return sorted(recommendations, key=lambda r: r.hit_rate_lower, reverse=True)
+
+
+def generate_all_tracks(
+    candidates: list[str], data_store: DataStore, phase: MarketPhase | None, limit: int
+) -> dict[str, list[Recommendation]]:
+    """BR25: 국면 게이트를 한 번 확인하고 4개 트랙을 각각 산출한다.
+
+    게이트는 약상승장까지 연다 -- 실측상 약상승장 구간은 기대수익이 양수였고 '상승장 아님'
+    구간은 0 또는 음수였다."""
+    if phase is None or phase.phase not in OPEN_PHASES:
+        return {spec.key: [] for spec in TRACKS}
+    return {spec.key: generate_track_recommendations(candidates, data_store, spec)[:limit] for spec in TRACKS}

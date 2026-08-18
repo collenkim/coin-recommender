@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from src.backtest import FORWARD_BARS_1H, STOP_LOSS, TARGET_RETURN
-from src.long_track import LONG_HOLD_BARS_4H, LONG_STOP_LOSS, LONG_TARGET_RETURN
+from src.tracks import TRACK_BY_KEY
 from src.binance_client import BinanceClient
 from src.data_store import ENTRY_TOUCHED, STOP_HIT, TARGET_HIT, DataStore, MonitoredRecommendation
 from src.scorer import SOURCE
@@ -11,12 +11,20 @@ from src.scorer import SOURCE
 logger = logging.getLogger(__name__)
 
 _MONITOR_TIMEFRAME = "1m"
-_LONG_HOLD_HOURS = LONG_HOLD_BARS_4H * 4
+_MAX_HOLD_HOURS = max([FORWARD_BARS_1H] + [t.hold_hours for t in TRACK_BY_KEY.values()])
 
 
-def _hold_hours(rec) -> int:
-    """BR24: 추천이 살아 있는 기간. 단기 24시간, 장기 90일."""
-    return _LONG_HOLD_HOURS if getattr(rec, "track", "short") == "long" else FORWARD_BARS_1H
+def _rules(rec) -> tuple[float, float, int]:
+    """BR25: 트랙마다 목표·손절·보유기간이 다르다. 하나의 상수를 공유하면 장기 추천이 단기
+    기준으로 잘못 알림되고, 아직 살아 있는 포지션이 종료 처리된다.
+
+    기존 레짐 게이트 트랙(BR18~BR21)은 track='regime'으로 저장된다 -- BR25 '단기'와 목표·손절이
+    같지만 보유가 24시간 vs 12시간이라 키를 나눴다. BR25 스펙에 없는 키는 기존 규칙으로 떨어지며,
+    이 배포 이전에 저장된 track='short' 행도 그 경로를 타야 하므로 기본값을 'regime'으로 둔다."""
+    spec = TRACK_BY_KEY.get(getattr(rec, "track", "regime"))
+    if spec is not None:
+        return spec.target, spec.stop, spec.hold_hours
+    return TARGET_RETURN, STOP_LOSS, FORWARD_BARS_1H
 
 
 @dataclass(frozen=True)
@@ -37,14 +45,9 @@ def _events_for(rec: MonitoredRecommendation, candles: list) -> list[PriceEvent]
     한 봉에서 목표가와 손절가를 동시에 만족하면 `simulate_trade`와 동일하게 손절을 먼저
     체결된 것으로 본다. 그리고 둘 중 하나가 나오면 포지션이 끝난 것이므로 즉시 중단한다.
     """
-    # BR24: 트랙마다 목표·손절이 다르다. 단기 상수를 공유하면 장기 추천이 +3%/-2%에서
-    # 잘못 알림되고, 실제로는 아직 살아 있는 포지션이 종료 처리된다.
-    if getattr(rec, "track", "short") == "long":
-        target_price = rec.entry_price * (1 + LONG_TARGET_RETURN)
-        stop_price = rec.entry_price * (1 - LONG_STOP_LOSS)
-    else:
-        target_price = rec.entry_price * (1 + TARGET_RETURN)
-        stop_price = rec.entry_price * (1 - STOP_LOSS)
+    target, stop, _ = _rules(rec)
+    target_price = rec.entry_price * (1 + target)
+    stop_price = rec.entry_price * (1 - stop)
     entry_seen = rec.entry_touched_at is not None
     events: list[PriceEvent] = []
 
@@ -70,14 +73,14 @@ def check_price_events(data_store: DataStore, binance_client: BinanceClient, now
     이미 기록된 이벤트는 다시 알리지 않는다(`mark_price_event`가 NULL일 때만 쓰므로 기록 자체가
     중복 방지 장치다). 한 종목의 조회 실패가 나머지 감시를 막지 않는다 -- Unit 1 BR7과 같은 방향.
     """
-    # BR24: 조회는 넓게(장기 90일) 하고 보유 기간은 **트랙별로** 판정한다. 하나의 창을 공유하면
-    # 24시간으로는 장기 포지션이 하루 만에 감시에서 빠지고, 90일로는 이미 끝난 단기 추천을 계속
-    # 조회한다.
-    since = now - timedelta(hours=max(FORWARD_BARS_1H, _LONG_HOLD_HOURS))
+    # BR25: 조회는 가장 긴 트랙 기준으로 넓게 하고, 보유 기간은 **트랙별로** 판정한다.
+    # 하나의 창을 공유하면 24시간으로는 장기 포지션이 하루 만에 감시에서 빠지고, 7일로는
+    # 이미 끝난 초단기 추천을 계속 조회한다.
+    since = now - timedelta(hours=_MAX_HOLD_HOURS)
     new_events: list[PriceEvent] = []
 
     for rec in data_store.get_monitorable_recommendations(since):
-        if rec.run_time < now - timedelta(hours=_hold_hours(rec)):
+        if rec.run_time < now - timedelta(hours=_rules(rec)[2]):
             continue
         try:
             candles = binance_client.get_klines_since(rec.market, _MONITOR_TIMEFRAME, rec.entry_time, max_requests=3)

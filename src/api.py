@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.backtest import FORWARD_BARS_1H, STOP_LOSS, TARGET_RETURN, wilson_lower
-from src.long_track import LONG_HOLD_BARS_4H, LONG_STOP_LOSS, LONG_TARGET_RETURN
+from src.tracks import TRACK_BY_KEY
 from src.config import settings
 from src.data_store import DataStore
 from src.pipeline import AlreadyRunningError, run_recommendation_pipeline
@@ -41,7 +41,7 @@ class RecommendationOut(BaseModel):
     max_drawdown: float | None = None
     target_reached: bool | None = None
     realized_return: float | None = None
-    track: str = "short"  # BR24: "short" | "long"
+    track: str = "regime"  # BR25: "ultra" | "short" | "mid" | "long" | "regime"(기존 레짐 게이트)
 
 
 class RunSummary(BaseModel):
@@ -93,18 +93,16 @@ async def global_exception_handler(request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "internal error"})
 
 
-_LONG_VALIDITY_WINDOW = timedelta(hours=LONG_HOLD_BARS_4H * 4)
-
-
 def _to_recommendation_out(r) -> RecommendationOut:
     entry_time = getattr(r, "entry_time", None)
     entry_price = getattr(r, "entry_price", None)
-    track = getattr(r, "track", "short")
-    # BR24: 트랙마다 목표·손절·보유기간이 다르다. 단기 상수를 공유하면 장기 추천의
+    track = getattr(r, "track", "regime")
+    # BR25: 트랙마다 목표·손절·보유기간이 다르다. 하나의 상수를 공유하면 다른 트랙의
     # target_price/stop_price/exit_deadline이 전부 틀린 값으로 나간다.
+    spec = TRACK_BY_KEY.get(track)
     target, stop, window = (
-        (LONG_TARGET_RETURN, LONG_STOP_LOSS, _LONG_VALIDITY_WINDOW)
-        if track == "long"
+        (spec.target, spec.stop, timedelta(hours=spec.hold_hours))
+        if spec is not None
         else (TARGET_RETURN, STOP_LOSS, _VALIDITY_WINDOW)
     )
     # 적중률은 저장된 n/hit_count에서 그대로 유도한다 -- 별도 컬럼을 두면 저장 시점과 계산 방식이
@@ -213,7 +211,8 @@ def trigger_run() -> RecommendationsResponse:
         run_time=result.run_time,
         regime_bullish=result.regime is not None,
         recommendations=[
-            _to_recommendation_out(r) for r in result.recommendations + (result.long_recommendations or [])
+            _to_recommendation_out(r)
+            for r in result.recommendations + [x for v in (result.tracks or {}).values() for x in v]
         ],
         market_phase=_to_market_phase_out(result.phase),
     )

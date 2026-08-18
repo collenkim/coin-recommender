@@ -16,9 +16,10 @@ from src.scorer import (
     SOURCE,
     check_market_phase,
     check_market_regime,
-    generate_long_recommendations,
+    generate_all_tracks,
     generate_recommendations,
 )
+from src.tracks import COLLECTED_TIMEFRAMES, LOOKBACK_DAYS_BY_TIMEFRAME, TRACKS
 
 _EVALUATION_WINDOW_HOURS = 24
 
@@ -35,9 +36,9 @@ class AlreadyRunningError(Exception):
 class PipelineRunResult:
     run_time: datetime
     regime: str | None
-    recommendations: list          # BR18~BR21 단기 트랙
-    phase: object | None = None    # BR23 MarketPhase, 표시 전용
-    long_recommendations: list | None = None  # BR24 장기 트랙
+    recommendations: list          # BR18~BR21 기존 단기 트랙 (레짐 게이트)
+    phase: object | None = None    # BR23 MarketPhase
+    tracks: dict | None = None     # BR25 4트랙 {key: [Recommendation]}
 
 
 _EXCHANGE_EPOCH = datetime(2017, 1, 1, tzinfo=timezone.utc)  # 바이낸스 개장(2017-07)보다 이르면 충분
@@ -79,8 +80,13 @@ def _collect_and_store_binance(
     갖고 있는가"를 함께 본다(종목·타임프레임당 1요청). 있으면 더 받을 과거가 없으므로 증분으로
     간다. 2026-08-18 lookback 확대로 드러난 결함이다.
     """
-    target_start = datetime.now(timezone.utc) - timedelta(days=lookback_days or settings.backtest_lookback_days)
+    default_lookback = lookback_days or settings.backtest_lookback_days
     for timeframe in timeframes:
+        # BR25: 짧은 봉은 얕게 받는다 -- 15분봉에 16년을 요구하면 561페이지가 필요해
+        # _MAX_PAGES에서 조용히 잘린다. 트랙에 필요한 건 최대 이력이 아니라 충분한 표본이다.
+        target_start = datetime.now(timezone.utc) - timedelta(
+            days=LOOKBACK_DAYS_BY_TIMEFRAME.get(timeframe, default_lookback)
+        )
         try:
             first_time = data_store.get_first_candle_time(SOURCE, symbol, timeframe)
             if first_time is not None and first_time > target_start and _is_exchange_earliest(
@@ -158,11 +164,11 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
         now = datetime.now(timezone.utc)
 
         candidates = binance_market_selector.get_candidate_markets()
-        # 장기 트랙(BR24)은 4시간봉으로 판정하므로 상위 후보에 한해 4시간봉도 모은다.
-        # 전체 후보에 4시간봉을 받지 않는 이유는 단기 트랙이 1시간봉만 쓰기 때문이다.
-        long_candidates = candidates[: settings.long_top_n_candidates]
+        # BR25: 4트랙이 쓰는 타임프레임을 상위 후보에 한해 모은다. 1m/3m/5m은 제외했다 --
+        # 20종 9년 기준 23GB인데 초단기 기여가 창마다 부호가 갈렸다.
+        track_candidates = candidates[: settings.long_top_n_candidates]
         for symbol in candidates:
-            timeframes = ("1h", REGIME_TIMEFRAME) if symbol in long_candidates else ("1h",)
+            timeframes = COLLECTED_TIMEFRAMES if symbol in track_candidates else ("1h",)
             _collect_and_store_binance(store, binance_client, symbol, timeframes=timeframes)
         # BTC 4시간봉은 레짐 판정 전용 (BR20). 200일 이동평균 워밍업분을 더 깊게 받는다 -- 그만큼이
         # 없으면 백테스트 앞구간에서 반등 판정이 불가능해져 표본이 잘린다.
@@ -178,11 +184,9 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
         regime = check_market_regime(store)
         phase = check_market_phase(store)
         recommendations = generate_recommendations(candidates, store)[: settings.recommendations_per_exchange]
-        long_recommendations = generate_long_recommendations(long_candidates, store, now)[
-            : settings.recommendations_per_exchange
-        ]
+        tracks = generate_all_tracks(track_candidates, store, phase, settings.recommendations_per_exchange)
 
-        store.save_run(now, regime is not None, recommendations + long_recommendations)
+        store.save_run(now, regime is not None, recommendations + [r for v in tracks.values() for r in v])
 
         try:
             send_notification(
@@ -194,7 +198,7 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
                 settings.slack_webhook_url,
                 timeout_seconds=settings.http_timeout_seconds,
                 phase=phase,
-                long_recommendations=long_recommendations,
+                tracks=tracks,
                 now=now,
             )
         except Exception:
@@ -207,7 +211,7 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
             regime=regime,
             recommendations=recommendations,
             phase=phase,
-            long_recommendations=long_recommendations,
+            tracks=tracks,
         )
     finally:
         _lock.release()

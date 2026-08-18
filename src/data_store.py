@@ -9,7 +9,20 @@ Source = Literal["upbit", "binance"]
 
 # 1m은 BR22 가격 감시 전용 (저장하지 않고 조회만 한다). 빠지면 drop_unclosed가 KeyError를
 # 내고, 감시 루프의 예외 처리에 먹혀 "이벤트 0건"으로 조용히 넘어간다.
-TIMEFRAME_HOURS = {"1m": 1 / 60, "1h": 1, "4h": 4}
+# 1m은 BR22 가격 감시 전용(저장하지 않고 조회만). 나머지는 BR25 4트랙이 쓰는 수집 대상이다.
+# 여기 빠진 타임프레임을 조회하면 drop_unclosed가 KeyError를 내고, 수집 루프의 예외 처리에
+# 먹혀 "봉 0건"으로 조용히 넘어간다 -- 새 타임프레임을 늘릴 때 반드시 함께 등록한다.
+# 1M(월봉)은 길이가 고르지 않아 30일 근사값이다 (마감 판정에만 쓰므로 오차가 문제되지 않는다).
+TIMEFRAME_HOURS = {
+    "1m": 1 / 60,
+    "15m": 0.25,
+    "30m": 0.5,
+    "1h": 1,
+    "4h": 4,
+    "1d": 24,
+    "1w": 168,
+    "1M": 720,
+}
 
 _TABLE_BY_SOURCE = {
     "upbit": "upbit_candles",
@@ -79,7 +92,7 @@ class RecommendationRecord:
     entry_time: datetime | None = None
     entry_price: float | None = None
     max_drawdown: float | None = None
-    track: str = "short"
+    track: str = "regime"
 
 
 @dataclass(frozen=True)
@@ -109,7 +122,7 @@ class MonitoredRecommendation:
     entry_price: float
     entry_time: datetime
     entry_touched_at: datetime | None
-    track: str = "short"
+    track: str = "regime"
 
 
 _RUNS_SCHEMA = """
@@ -129,7 +142,7 @@ CREATE TABLE IF NOT EXISTS recommendations (
     target_reached INTEGER,
     realized_return REAL,
     evaluated_at TEXT,
-    track TEXT NOT NULL DEFAULT 'short',
+    track TEXT NOT NULL DEFAULT 'regime',
     PRIMARY KEY (run_time, market, track)
 );
 """
@@ -149,8 +162,8 @@ _RECOMMENDATIONS_OUTCOME_COLUMNS = [
     ("entry_touched_at", "TEXT"),
     ("target_hit_at", "TEXT"),
     ("stop_hit_at", "TEXT"),
-    # BR24 2트랙. 기존 행은 전부 단기 트랙이므로 기본값이 그대로 맞다.
-    ("track", "TEXT NOT NULL DEFAULT 'short'"),
+    # BR24/BR25 다중 트랙. 기존 행은 전부 레짐 게이트 트랙이므로 기본값 'regime'이 그대로 맞다.
+    ("track", "TEXT NOT NULL DEFAULT 'regime'"),
 ]
 
 # BR24: PK를 (run_time, market)에서 (run_time, market, track)으로 넓히는 마이그레이션.
@@ -173,7 +186,7 @@ CREATE TABLE recommendations_new (
     entry_touched_at TEXT,
     target_hit_at TEXT,
     stop_hit_at TEXT,
-    track TEXT NOT NULL DEFAULT 'short',
+    track TEXT NOT NULL DEFAULT 'regime',
     PRIMARY KEY (run_time, market, track)
 );
 """
@@ -216,7 +229,7 @@ def _row_to_recommendation_record(row) -> RecommendationRecord:
         entry_time=None if entry_time is None else datetime.fromisoformat(entry_time),
         entry_price=entry_price,
         max_drawdown=max_drawdown,
-        track=track or "short",
+        track=track or "regime",
     )
 
 
@@ -381,7 +394,7 @@ class DataStore:
                     entry_time.isoformat() if entry_time is not None else None,
                     getattr(r, "entry_price", None),
                     getattr(r, "max_drawdown", None),
-                    getattr(r, "track", "short"),
+                    getattr(r, "track", "regime"),
                 )
             )
         with self._connect() as conn:
@@ -466,7 +479,7 @@ class DataStore:
                 entry_price=entry_price,
                 entry_time=datetime.fromisoformat(entry_time),
                 entry_touched_at=None if entry_touched_at is None else datetime.fromisoformat(entry_touched_at),
-                track=track or "short",
+                track=track or "regime",
             )
             for run_time, market, entry_price, entry_time, entry_touched_at, _, _, track in rows
         ]

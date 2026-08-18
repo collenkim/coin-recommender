@@ -5,14 +5,8 @@ import requests
 
 from src.backtest import STOP_LOSS, TARGET_RETURN
 from src.data_store import ENTRY_TOUCHED, STOP_HIT, TARGET_HIT
-from src.long_track import (
-    LONG_HOLD_BARS_4H,
-    LONG_STOP_LOSS,
-    LONG_TARGET_RETURN,
-    cycle_position,
-    next_open_at,
-)
-from src.market_phase import NOT_BULL, STRONG_BULL, WEAK_BULL
+from src.market_phase import BULL, NOT_BULL, STRONG_BULL, WEAK_BULL
+from src.tracks import TRACK_BY_KEY, TRACKS
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +23,12 @@ def _kst(moment: datetime, fmt: str = "%m-%d %H:%M") -> str:
     return moment.astimezone(_KST).strftime(fmt)
 
 
-_LONG_HOLD_DAYS = LONG_HOLD_BARS_4H * 4 // 24
-
-
 def _track_rules(r):
-    """BR24: 트랙마다 목표·손절·보유기간이 다르다. 하나의 상수를 공유하면 장기 추천이 단기
+    """BR25: 트랙마다 목표·손절·보유기간이 다르다. 하나의 상수를 공유하면 장기 추천이 단기
     기준으로 잘못 표기된다."""
-    if getattr(r, "track", "short") == "long":
-        return LONG_TARGET_RETURN, LONG_STOP_LOSS, _LONG_HOLD_DAYS * 24
+    spec = TRACK_BY_KEY.get(getattr(r, "track", "regime"))
+    if spec is not None:
+        return spec.target, spec.stop, spec.hold_hours
     return TARGET_RETURN, STOP_LOSS, _HOLD_HOURS
 
 
@@ -102,9 +94,10 @@ def _format_price_alert(now: datetime, events: list) -> str:
 
 # 문구는 **지금 상태의 설명**이지 전망이 아니다 (BR23) -- "오른다"는 뜻이 읽히는 표현을 쓰지 않는다.
 _PHASE_HEADLINE = {
-    STRONG_BULL: "강상승장 — BTC·ETH 둘 다 상승 모멘텀이 강합니다",
-    WEAK_BULL: "약상승장 — BTC·ETH 둘 다 상승 중이지만 강세까지는 아닙니다",
-    NOT_BULL: "상승장 아님 — BTC·ETH가 함께 상승하고 있지는 않습니다",
+    STRONG_BULL: "강세장 — BTC·ETH 둘 다 상승 모멘텀이 강합니다",
+    BULL: "상승장 — BTC·ETH 둘 다 상승 중이지만 강세까지는 아닙니다",
+    WEAK_BULL: "약상승장 — 둘 중 하나만 상승 중입니다",
+    NOT_BULL: "상승장 아님 — BTC·ETH 모두 상승 모멘텀이 없습니다",
 }
 _ASSET_LABELS = {STRONG_BULL: "강상승", WEAK_BULL: "약상승", NOT_BULL: "비상승"}
 # 사람이 읽는 순서. 짧은 구간부터 긴 구간으로 늘어놓아야 추세가 한눈에 보인다.
@@ -125,55 +118,46 @@ def _phase_lines(phase) -> list[str]:
     return lines
 
 
-def _short_section(recommendations: list) -> list[str]:
-    header = f"[단기] 24시간 내 +{TARGET_RETURN:.0%} 목표 · {len(recommendations)}개"
+def _hours_text(hours: int) -> str:
+    return f"{hours // 24}일" if hours >= 48 else f"{hours}시간"
+
+
+def _regime_section(recommendations: list) -> list[str]:
+    """BR18~BR21 레짐 게이트 트랙. BR25 4트랙과 게이트·진입조건이 달라 섹션을 따로 둔다."""
+    header = f"[기존] 레짐 게이트 · 24시간 내 +{TARGET_RETURN:.0%} 목표 · {len(recommendations)}개"
     if not recommendations:
         return [f"{header}\n· 조건을 만족한 종목 없음"]
     return [header] + [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
 
 
-def _long_section(recommendations: list, now: datetime) -> list[str]:
-    """BR24: 장기 트랙. 0건이어도 제목과 사유를 남긴다 -- 그래야 게이트가 닫혀서 0건인지,
-    열렸는데 통과한 종목이 없어서 0건인지 구분된다."""
+def _track_section(spec, recommendations: list) -> list[str]:
+    """BR25: 트랙 하나 = 섹션 하나. 0건이어도 제목을 남겨 어느 트랙이 왜 비었는지 드러낸다."""
     header = (
-        f"[장기] 반감기 구간 · {_LONG_HOLD_DAYS}일 내 +{LONG_TARGET_RETURN:.0%} 목표"
-        f" · {len(recommendations)}개"
+        f"[{spec.label}] {_hours_text(spec.hold_hours)} 내 +{spec.target:.0%} 목표"
+        f" (손절 -{spec.stop:.0%}, {spec.timeframe} 구름대 돌파) · {len(recommendations)}개"
     )
-    position = cycle_position(now)
-    if position is None or not position.is_open:
-        reason = (
-            f"반감기 후 {position.elapsed_years:.1f}년차 — 개방 구간 아님"
-            if position is not None
-            else "사이클 판정 불가"
-        )
-        opens = next_open_at(now)
-        if opens is not None:
-            reason += f" (다음 개방 {opens.date()})"
-        return [f"{header}\n· {reason}"]
     if not recommendations:
-        return [f"{header}\n· 반감기 후 {position.elapsed_years:.1f}년차 (개방) — 조건을 만족한 종목 없음"]
-    blocks = [header] + [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
-    # 근거 강도를 함께 적는다. 단기 트랙(5년/876매매)과 같은 신뢰도로 읽히면 안 된다.
-    blocks.append("· 근거: 반감기 사이클 표본 2개, out-of-sample 검증 아님 — 단기 트랙보다 근거가 약함")
-    return blocks
+        return [f"{header}\n· 조건을 만족한 종목 없음"]
+    return [header] + [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
 
 
-def _format_message(run_time: datetime, recommendations: list, phase=None, long_recommendations=None, now=None) -> str:
-    """BR5/BR23/BR24: 상단에 추천 개수와 시장 국면, 그 아래 트랙별 섹션.
+def _format_message(run_time: datetime, recommendations: list, phase=None, tracks=None, now=None) -> str:
+    """BR5/BR23/BR25: 상단에 총 개수와 시장 국면, 그 아래 트랙별 섹션.
 
-    두 트랙을 별도 발송하지 않는 이유: 시간당 알림이 두 배가 되고, 한쪽만 0건일 때 "왜 안 왔는지"를
+    트랙을 별도 발송하지 않는 이유: 시간당 알림이 다섯 배가 되고, 어느 트랙이 왜 0건인지
     구분할 수 없다."""
-    long_recommendations = long_recommendations or []
+    tracks = tracks or {}
     stamp = f"{_kst(run_time, '%Y-%m-%d %H:%M')} KST"
-    total = len(recommendations) + len(long_recommendations)
+    total = len(recommendations) + sum(len(v) for v in tracks.values())
     parts = [f"[coin-recommender] 추천 코인 {total}개\n{stamp}"]
 
     phase_block = _phase_lines(phase)
     if phase_block:
         parts.append("\n".join(phase_block))
 
-    parts.extend(_short_section(recommendations))
-    parts.extend(_long_section(long_recommendations, now or run_time))
+    for spec in TRACKS:
+        parts.extend(_track_section(spec, tracks.get(spec.key, [])))
+    parts.extend(_regime_section(recommendations))
     return "\n\n".join(parts)
 
 
@@ -186,13 +170,13 @@ def send_notification(
     slack_webhook_url: str | None = None,
     timeout_seconds: float = 10.0,
     phase=None,
-    long_recommendations=None,
+    tracks=None,
     now=None,
 ) -> None:
     """BR4: sends to every configured channel independently; a failure on one channel does not
     prevent the others from being attempted. Caller (Pipeline) treats this as best-effort (BR3)."""
     _dispatch(
-        _format_message(run_time, recommendations, phase, long_recommendations, now),
+        _format_message(run_time, recommendations, phase, tracks, now),
         telegram_bot_token,
         telegram_chat_id,
         discord_webhook_url,

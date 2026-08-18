@@ -141,11 +141,18 @@ def test_get_klines_since_returns_empty_when_no_history():
         assert client.get_klines_since("BTCUSDT", "1h", datetime.fromtimestamp(0, tz=timezone.utc)) == []
 
 
-def test_pagination_guard_covers_the_configured_lookback():
+def test_pagination_guard_covers_every_collected_timeframe():
     """상한이 모자라면 예외 없이 조용히 잘려, 설정한 lookback보다 짧은 이력으로 백테스트가 돈다.
-    12년치 1시간봉 = 105,120봉 = 106페이지."""
+
+    BR25에서 타임프레임이 늘면서 1시간봉만 검사하는 것으로는 부족해졌다 -- 15분봉은 같은
+    기간에 4배의 페이지를 쓴다. 각 타임프레임을 **자기 lookback**으로 검사한다."""
     from src.binance_client import _MAX_LIMIT, _MAX_PAGES
     from src.config import settings
+    from src.tracks import COLLECTED_TIMEFRAMES, LOOKBACK_DAYS_BY_TIMEFRAME, TIMEFRAME_HOURS
 
-    needed_pages = settings.backtest_lookback_days * 24 / _MAX_LIMIT
-    assert _MAX_PAGES > needed_pages, f"{_MAX_PAGES}페이지로는 {needed_pages:.0f}페이지가 필요한 lookback을 못 채운다"
+    for timeframe in COLLECTED_TIMEFRAMES:
+        days = LOOKBACK_DAYS_BY_TIMEFRAME.get(timeframe, settings.backtest_lookback_days)
+        needed = days * 24 / TIMEFRAME_HOURS[timeframe] / _MAX_LIMIT
+        assert _MAX_PAGES > needed, (
+            f"{timeframe}: {_MAX_PAGES}페이지로는 {needed:.0f}페이지가 필요한 {days}일 lookback을 못 채운다"
+        )

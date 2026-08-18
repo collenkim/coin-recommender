@@ -4,6 +4,7 @@ import pytest
 
 from src.data_store import Candle
 from src.market_phase import (
+    BULL,
     MOMENTUM_HORIZONS,
     MOMENTUM_WARMUP_BARS,
     NOT_BULL,
@@ -114,14 +115,15 @@ def _asset(market: str, label: str) -> AssetMomentum:
     "btc,eth,expected",
     [
         (STRONG_BULL, STRONG_BULL, STRONG_BULL),
-        (STRONG_BULL, WEAK_BULL, WEAK_BULL),
-        (STRONG_BULL, NOT_BULL, NOT_BULL),
-        (WEAK_BULL, WEAK_BULL, WEAK_BULL),
-        (WEAK_BULL, NOT_BULL, NOT_BULL),
+        (STRONG_BULL, WEAK_BULL, BULL),
+        (STRONG_BULL, NOT_BULL, WEAK_BULL),
+        (WEAK_BULL, WEAK_BULL, BULL),
+        (WEAK_BULL, NOT_BULL, WEAK_BULL),
         (NOT_BULL, NOT_BULL, NOT_BULL),
     ],
 )
-def test_combine_requires_agreement_from_both_assets(btc, eth, expected):
+def test_combine_grades_by_how_much_the_two_assets_agree(btc, eth, expected):
+    """BR25: 약상승장이 독립 등급이 되면서 '하나만 상승'을 상승장 아님으로 묶지 않는다."""
     assert combine([_asset("BTCUSDT", btc), _asset("ETHUSDT", eth)]) == expected
 
 

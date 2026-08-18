@@ -40,9 +40,14 @@ STRONG_30D = 0.20
 # 약상승은 30일이 양수이면서 5구간 중 과반이 양수인 경우.
 WEAK_MIN_POSITIVE = 3
 
-STRONG_BULL = "strong_bull"
-WEAK_BULL = "weak_bull"
-NOT_BULL = "not_bull"
+STRONG_BULL = "strong_bull"   # 강세장
+BULL = "bull"                 # 상승장
+WEAK_BULL = "weak_bull"       # 약상승장
+NOT_BULL = "not_bull"         # 상승장 아님 (추천 안 함)
+
+# BR25: 추천이 열리는 국면. 약상승장까지 연다 -- 실측상 약상승장 구간은 5분봉까지 기대수익이
+# 양수였고(+0.15~+0.27%), '상승장 아님' 구간은 0 또는 음수였다.
+OPEN_PHASES = (STRONG_BULL, BULL, WEAK_BULL)
 
 
 @dataclass(frozen=True)
@@ -88,18 +93,22 @@ def classify_asset(candles: list[Candle], market: str) -> AssetMomentum | None:
 
 
 def combine(assets: list[AssetMomentum]) -> str:
-    """BR23: 강상승장은 둘 다 강상승, 약상승장은 둘 다 상승(약 이상). 하나라도 비상승이면 상승장이 아니다.
+    """BR23/BR25: BTC·ETH 합의 정도로 4단계를 가른다.
 
-    사용자 요청이 "BTC, ETH 강세장일 경우"였으므로 두 자산의 합의를 요구한다 -- 알트는 BTC/ETH에
-    끌려다니므로 둘 중 하나만 오른 국면을 '상승장'이라 부르면 과장이 된다.
+    - **강세장**: 둘 다 강상승
+    - **상승장**: 둘 다 상승(약 이상)이되 둘 다 강상승은 아님
+    - **약상승장**: 하나만 상승
+    - **상승장 아님**: 둘 다 비상승
 
-    실측에서 실제로 걸린 문제라 규칙을 조인다: 2026-08-18 라이브 데이터가 BTC 비상승(365일 -45.0%,
-    90일 -16.0%) + ETH 약상승이었는데, 느슨한 규칙("하나라도 상승이면 약상승장")은 이걸 '약상승장'으로
-    표시했다. 헤드라인이 본문의 두 줄과 정면으로 어긋난다."""
+    2026-08-18에는 "하나만 상승"을 '상승장 아님'으로 묶었다. 헤드라인이 본문과 어긋나는 것을 막기
+    위해서였는데, 이제 약상승장이 **독립된 등급이자 추천 개방 구간**이 되었으므로 따로 뺀다 --
+    실측상 약상승장 구간의 기대수익은 양수였다(+0.15~+0.27%)."""
     labels = [a.label for a in assets]
     if all(label == STRONG_BULL for label in labels):
         return STRONG_BULL
     if all(label != NOT_BULL for label in labels):
+        return BULL
+    if any(label != NOT_BULL for label in labels):
         return WEAK_BULL
     return NOT_BULL
 
