@@ -5,6 +5,13 @@ import requests
 
 from src.backtest import STOP_LOSS, TARGET_RETURN
 from src.data_store import ENTRY_TOUCHED, STOP_HIT, TARGET_HIT
+from src.long_track import (
+    LONG_HOLD_BARS_4H,
+    LONG_STOP_LOSS,
+    LONG_TARGET_RETURN,
+    cycle_position,
+    next_open_at,
+)
 from src.market_phase import NOT_BULL, STRONG_BULL, WEAK_BULL
 
 logger = logging.getLogger(__name__)
@@ -22,6 +29,17 @@ def _kst(moment: datetime, fmt: str = "%m-%d %H:%M") -> str:
     return moment.astimezone(_KST).strftime(fmt)
 
 
+_LONG_HOLD_DAYS = LONG_HOLD_BARS_4H * 4 // 24
+
+
+def _track_rules(r):
+    """BR24: 트랙마다 목표·손절·보유기간이 다르다. 하나의 상수를 공유하면 장기 추천이 단기
+    기준으로 잘못 표기된다."""
+    if getattr(r, "track", "short") == "long":
+        return LONG_TARGET_RETURN, LONG_STOP_LOSS, _LONG_HOLD_DAYS * 24
+    return TARGET_RETURN, STOP_LOSS, _HOLD_HOURS
+
+
 def _entry_guide_lines(r) -> list[str]:
     """BR16/BR18: the entry the backtest actually measured, so acting on it matches the published
     probability. 목표가·손절가는 진입가에서 파생하므로 백테스트 규칙과 어긋날 수 없다."""
@@ -29,12 +47,14 @@ def _entry_guide_lines(r) -> list[str]:
     entry_time = getattr(r, "entry_time", None)
     if entry_price is None or entry_time is None:
         return []
-    deadline = entry_time + timedelta(hours=_HOLD_HOURS)
+    target, stop, hold_hours = _track_rules(r)
+    deadline = entry_time + timedelta(hours=hold_hours)
+    horizon = f"진입 +{hold_hours // 24}일" if hold_hours >= 48 else f"진입 +{hold_hours}시간"
     return [
         f"· 진입가: {entry_price:,.6g}  ({_kst(entry_time)} KST 봉 마감 기준)",
-        f"· 매도가: {entry_price * (1 + TARGET_RETURN):,.6g}  (+{TARGET_RETURN:.0%})",
-        f"· 손절가: {entry_price * (1 - STOP_LOSS):,.6g}  (-{STOP_LOSS:.0%})",
-        f"· 청산 기한: {_kst(deadline)} KST  (진입 +{_HOLD_HOURS}시간)",
+        f"· 매도가: {entry_price * (1 + target):,.6g}  (+{target:.0%})",
+        f"· 손절가: {entry_price * (1 - stop):,.6g}  (-{stop:.0%})",
+        f"· 청산 기한: {_kst(deadline)} KST  ({horizon})",
     ]
 
 
@@ -44,10 +64,12 @@ def _recommendation_block(order: int, r) -> str:
     if hit_rate is None and r.n:
         hit_rate = r.hit_count / r.n
     rate_text = "-" if hit_rate is None else f"{hit_rate:.0%}"
+    target, stop, hold_hours = _track_rules(r)
+    window = f"{hold_hours // 24}일" if hold_hours >= 48 else f"{hold_hours}시간"
     lines = [
         f"({order}) {r.market} · {getattr(r, 'source', 'binance')}",
-        f"· 24시간 내 +{TARGET_RETURN:.0%} 도달 확률: {rate_text}"
-        f"  (과거 {r.n}회 중 {r.hit_count}회, 손절 -{STOP_LOSS:.0%} 적용 기준)",
+        f"· {window} 내 +{target:.0%} 도달 확률: {rate_text}"
+        f"  (과거 {r.n}회 중 {r.hit_count}회, 손절 -{stop:.0%} 적용 기준)",
     ]
     lines.extend(_entry_guide_lines(r))
     return "\n".join(lines)
@@ -103,24 +125,56 @@ def _phase_lines(phase) -> list[str]:
     return lines
 
 
-def _format_message(run_time: datetime, recommendations: list, phase=None) -> str:
-    """BR5/BR23: Korean notification message format. 상단에 추천 개수와 시장 국면, 종목마다 번호 붙인 단락.
-
-    국면 문구는 추천이 0개일 때도 넣는다 -- 그게 없으면 "이번 회차 추천 없음"이 게이트가 닫혀서인지
-    통과한 코인이 없어서인지 구분되지 않는다."""
-    stamp = f"{_kst(run_time, '%Y-%m-%d %H:%M')} KST"
-    phase_block = _phase_lines(phase)
+def _short_section(recommendations: list) -> list[str]:
+    header = f"[단기] 24시간 내 +{TARGET_RETURN:.0%} 목표 · {len(recommendations)}개"
     if not recommendations:
-        parts = [f"[coin-recommender] 추천 코인 0개\n{stamp}"]
-        if phase_block:
-            parts.append("\n".join(phase_block))
-        parts.append("이번 회차 추천 없음")
-        return "\n\n".join(parts)
+        return [f"{header}\n· 조건을 만족한 종목 없음"]
+    return [header] + [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
 
-    header = f"[coin-recommender] 추천 코인 {len(recommendations)}개\n{stamp}"
-    blocks = ["\n".join(phase_block)] if phase_block else []
-    blocks.extend(_recommendation_block(i, r) for i, r in enumerate(recommendations, 1))
-    return header + "\n\n" + "\n\n".join(blocks)
+
+def _long_section(recommendations: list, now: datetime) -> list[str]:
+    """BR24: 장기 트랙. 0건이어도 제목과 사유를 남긴다 -- 그래야 게이트가 닫혀서 0건인지,
+    열렸는데 통과한 종목이 없어서 0건인지 구분된다."""
+    header = (
+        f"[장기] 반감기 구간 · {_LONG_HOLD_DAYS}일 내 +{LONG_TARGET_RETURN:.0%} 목표"
+        f" · {len(recommendations)}개"
+    )
+    position = cycle_position(now)
+    if position is None or not position.is_open:
+        reason = (
+            f"반감기 후 {position.elapsed_years:.1f}년차 — 개방 구간 아님"
+            if position is not None
+            else "사이클 판정 불가"
+        )
+        opens = next_open_at(now)
+        if opens is not None:
+            reason += f" (다음 개방 {opens.date()})"
+        return [f"{header}\n· {reason}"]
+    if not recommendations:
+        return [f"{header}\n· 반감기 후 {position.elapsed_years:.1f}년차 (개방) — 조건을 만족한 종목 없음"]
+    blocks = [header] + [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
+    # 근거 강도를 함께 적는다. 단기 트랙(5년/876매매)과 같은 신뢰도로 읽히면 안 된다.
+    blocks.append("· 근거: 반감기 사이클 표본 2개, out-of-sample 검증 아님 — 단기 트랙보다 근거가 약함")
+    return blocks
+
+
+def _format_message(run_time: datetime, recommendations: list, phase=None, long_recommendations=None, now=None) -> str:
+    """BR5/BR23/BR24: 상단에 추천 개수와 시장 국면, 그 아래 트랙별 섹션.
+
+    두 트랙을 별도 발송하지 않는 이유: 시간당 알림이 두 배가 되고, 한쪽만 0건일 때 "왜 안 왔는지"를
+    구분할 수 없다."""
+    long_recommendations = long_recommendations or []
+    stamp = f"{_kst(run_time, '%Y-%m-%d %H:%M')} KST"
+    total = len(recommendations) + len(long_recommendations)
+    parts = [f"[coin-recommender] 추천 코인 {total}개\n{stamp}"]
+
+    phase_block = _phase_lines(phase)
+    if phase_block:
+        parts.append("\n".join(phase_block))
+
+    parts.extend(_short_section(recommendations))
+    parts.extend(_long_section(long_recommendations, now or run_time))
+    return "\n\n".join(parts)
 
 
 def send_notification(
@@ -132,11 +186,13 @@ def send_notification(
     slack_webhook_url: str | None = None,
     timeout_seconds: float = 10.0,
     phase=None,
+    long_recommendations=None,
+    now=None,
 ) -> None:
     """BR4: sends to every configured channel independently; a failure on one channel does not
     prevent the others from being attempted. Caller (Pipeline) treats this as best-effort (BR3)."""
     _dispatch(
-        _format_message(run_time, recommendations, phase),
+        _format_message(run_time, recommendations, phase, long_recommendations, now),
         telegram_bot_token,
         telegram_chat_id,
         discord_webhook_url,

@@ -175,7 +175,9 @@ def test_message_format_with_no_recommendations():
         send_notification([], RUN_TIME, None, None, "https://discord.example/webhook")
 
     message = mock_post.call_args.kwargs["json"]["content"]
-    assert "이번 회차 추천 없음" in message
+    # BR24: 단일 "이번 회차 추천 없음"에서 트랙별 사유로 바뀌었다 -- 어느 트랙이 왜 0건인지 구분된다.
+    assert "[단기]" in message and "[장기]" in message
+    assert "조건을 만족한 종목 없음" in message
 
 
 def test_header_reports_the_recommendation_count_and_kst_run_time():
@@ -198,8 +200,9 @@ def test_each_recommendation_is_its_own_numbered_paragraph():
         send_notification(recs, RUN_TIME, None, None, "https://discord.example/webhook")
 
     message = mock_post.call_args.kwargs["json"]["content"]
-    body = message.split("\n\n", 1)[1]
-    assert len(body.split("\n\n")) == 3  # 종목마다 빈 줄로 분리된 한 단락
+    short_body = message.split("[단기]", 1)[1].split("[장기]", 1)[0]
+    blocks = [b for b in short_body.split("\n\n") if b.strip().startswith("(")]
+    assert len(blocks) == 3  # 종목마다 빈 줄로 분리된 한 단락
     for order in (1, 2, 3):
         assert f"({order}) SYM{order - 1}USDT" in message
 
@@ -210,7 +213,7 @@ def test_zero_recommendations_still_reports_a_count():
 
     message = mock_post.call_args.kwargs["json"]["content"]
     assert "추천 코인 0개" in message
-    assert "이번 회차 추천 없음" in message
+    assert "조건을 만족한 종목 없음" in message
 
 
 # --- 가격 도달 알림 (BR22) ---
@@ -306,7 +309,7 @@ def test_phase_line_appears_even_with_zero_recommendations():
     message = _send_with_phase([], _phase("strong_bull", ("BTCUSDT", "strong_bull", _FULL)))
     assert "추천 코인 0개" in message
     assert "강상승장" in message
-    assert "이번 회차 추천 없음" in message
+    assert "조건을 만족한 종목 없음" in message
 
 
 def test_phase_lists_btc_and_eth_separately_with_all_five_horizons():
@@ -329,8 +332,8 @@ def test_phase_lists_btc_and_eth_separately_with_all_five_horizons():
 def test_phase_line_is_omitted_when_phase_is_unknown():
     """이력 부족을 '상승장 아님'으로 적으면 데이터 결손이 시장 판단으로 둔갑한다."""
     message = _send_with_phase([], None)
-    assert "상승장" not in message
-    assert "이번 회차 추천 없음" in message
+    assert "강상승장" not in message and "약상승장" not in message
+    assert "조건을 만족한 종목 없음" in message
 
 
 def test_recommendations_still_render_below_the_phase_line():
@@ -343,4 +346,4 @@ def test_recommendations_still_render_below_the_phase_line():
 def test_phase_is_optional_so_existing_callers_are_unaffected():
     with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
         send_notification([], RUN_TIME, None, None, "https://discord.example/webhook")
-    assert "이번 회차 추천 없음" in mock_post.call_args.kwargs["json"]["content"]
+    assert "조건을 만족한 종목 없음" in mock_post.call_args.kwargs["json"]["content"]

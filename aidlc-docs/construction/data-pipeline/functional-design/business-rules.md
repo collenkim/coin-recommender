@@ -10,7 +10,7 @@
 - 100봉 미만이면 해당 (market, timeframe)은 이번 회차에서 스킵 (신규 상장 등으로 이력 부족 시)
 
 ## BR3. 백테스트용 이력 수집
-- `backtest_lookback_days` (기본 **1825일 = 5년**, `config/settings.yaml`에서 설정 가능) 만큼 추가 수집
+- `backtest_lookback_days` (기본 **5840일 = 16년**, `config/settings.yaml`에서 설정 가능) 만큼 추가 수집. 상한값이며 실제로는 거래소 가용 최대까지만 받는다 (바이낸스 BTCUSDT 최초봉 2017-08-17 = 약 9년)
 - 지표용 100봉 수집과 동일한 upsert 대상 — 별도 로직/테이블 불필요
 
 ## BR4. 증분 수집 기준

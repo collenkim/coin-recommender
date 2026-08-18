@@ -147,19 +147,59 @@ def test_binance_candidate_collection_stores_both_timeframes():
     assert stored_timeframes == {"1h", "4h"}
 
 
+def _earliest_probe(candle_time):
+    """`_is_exchange_earliest`가 쓰는 1봉 조회의 응답."""
+    from src.data_store import Candle
+
+    return [Candle("SOLUSDT", "1h", candle_time, 1.0, 1.0, 1.0, 1.0, 1.0)]
+
+
 def test_binance_collection_backfills_when_stored_history_is_shallower_than_lookback():
     """The bug this fixes: markets stored under the old 1000-candle cap must reach back, and the
     incremental path only ever moves forward."""
     mock_store = MagicMock()
     mock_store.get_first_candle_time.return_value = datetime.now(timezone.utc) - timedelta(days=10)
     mock_binance = MagicMock()
+    # 거래소는 훨씬 오래된 봉을 갖고 있다 -- 아직 받을 과거가 남았으므로 백필해야 한다.
+    mock_binance.get_klines.return_value = _earliest_probe(datetime.now(timezone.utc) - timedelta(days=2000))
 
     from src.pipeline import _collect_and_store_binance
 
     _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h",))
 
     mock_binance.get_klines_since.assert_called_once()
-    mock_binance.get_klines.assert_not_called()
+
+
+def test_binance_collection_stops_refetching_once_it_holds_the_exchange_earliest_bar():
+    """2026-08-18 결함: lookback을 12년으로 늘리자 `first > target_start`가 영원히 참이 되어
+    (바이낸스 자체가 2017년 시작) 모든 종목을 매 실행마다 전량 재수집했다 -- 실측 136초/약 600요청.
+    거래소의 첫 봉을 이미 갖고 있으면 더 받을 과거가 없으므로 증분으로 가야 한다."""
+    stored_first = datetime(2017, 11, 6, tzinfo=timezone.utc)
+    mock_store = MagicMock()
+    mock_store.get_first_candle_time.return_value = stored_first
+    mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(hours=2)
+    mock_binance = MagicMock()
+    mock_binance.get_klines.return_value = _earliest_probe(stored_first)
+
+    from src.pipeline import _collect_and_store_binance
+
+    _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h",))
+
+    mock_binance.get_klines_since.assert_not_called()
+
+
+def test_binance_collection_backfills_when_the_earliest_probe_fails():
+    """판단이 불가능하면 백필로 떨어진다 -- 잘못 건너뛰어 이력이 비는 것보다 한 번 더 받는 게 낫다."""
+    mock_store = MagicMock()
+    mock_store.get_first_candle_time.return_value = datetime(2017, 11, 6, tzinfo=timezone.utc)
+    mock_binance = MagicMock()
+    mock_binance.get_klines.side_effect = RuntimeError("probe failed")
+
+    from src.pipeline import _collect_and_store_binance
+
+    _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h",))
+
+    mock_binance.get_klines_since.assert_called_once()
 
 
 def test_binance_collection_uses_incremental_once_history_is_deep_enough():

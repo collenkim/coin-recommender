@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.backtest import FORWARD_BARS_1H, STOP_LOSS, TARGET_RETURN, wilson_lower
+from src.long_track import LONG_HOLD_BARS_4H, LONG_STOP_LOSS, LONG_TARGET_RETURN
 from src.config import settings
 from src.data_store import DataStore
 from src.pipeline import AlreadyRunningError, run_recommendation_pipeline
@@ -40,6 +41,7 @@ class RecommendationOut(BaseModel):
     max_drawdown: float | None = None
     target_reached: bool | None = None
     realized_return: float | None = None
+    track: str = "short"  # BR24: "short" | "long"
 
 
 class RunSummary(BaseModel):
@@ -91,9 +93,20 @@ async def global_exception_handler(request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "internal error"})
 
 
+_LONG_VALIDITY_WINDOW = timedelta(hours=LONG_HOLD_BARS_4H * 4)
+
+
 def _to_recommendation_out(r) -> RecommendationOut:
     entry_time = getattr(r, "entry_time", None)
     entry_price = getattr(r, "entry_price", None)
+    track = getattr(r, "track", "short")
+    # BR24: 트랙마다 목표·손절·보유기간이 다르다. 단기 상수를 공유하면 장기 추천의
+    # target_price/stop_price/exit_deadline이 전부 틀린 값으로 나간다.
+    target, stop, window = (
+        (LONG_TARGET_RETURN, LONG_STOP_LOSS, _LONG_VALIDITY_WINDOW)
+        if track == "long"
+        else (TARGET_RETURN, STOP_LOSS, _VALIDITY_WINDOW)
+    )
     # 적중률은 저장된 n/hit_count에서 그대로 유도한다 -- 별도 컬럼을 두면 저장 시점과 계산 방식이
     # 어긋날 수 있고, 과거 회차 행에도 같은 규칙이 자동으로 적용된다.
     hit_rate = (r.hit_count / r.n) if r.n else None
@@ -107,12 +120,13 @@ def _to_recommendation_out(r) -> RecommendationOut:
         hit_rate_lower=None if hit_rate is None else wilson_lower(r.hit_count, r.n),
         entry_time=entry_time,
         entry_price=entry_price,
-        target_price=None if entry_price is None else entry_price * (1 + TARGET_RETURN),
-        stop_price=None if entry_price is None else entry_price * (1 - STOP_LOSS),
-        exit_deadline=None if entry_time is None else entry_time + _VALIDITY_WINDOW,
+        target_price=None if entry_price is None else entry_price * (1 + target),
+        stop_price=None if entry_price is None else entry_price * (1 - stop),
+        exit_deadline=None if entry_time is None else entry_time + window,
         max_drawdown=getattr(r, "max_drawdown", None),
         target_reached=getattr(r, "target_reached", None),
         realized_return=getattr(r, "realized_return", None),
+        track=track,
     )
 
 
@@ -198,7 +212,9 @@ def trigger_run() -> RecommendationsResponse:
     return RecommendationsResponse(
         run_time=result.run_time,
         regime_bullish=result.regime is not None,
-        recommendations=[_to_recommendation_out(r) for r in result.recommendations],
+        recommendations=[
+            _to_recommendation_out(r) for r in result.recommendations + (result.long_recommendations or [])
+        ],
         market_phase=_to_market_phase_out(result.phase),
     )
 

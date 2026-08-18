@@ -16,6 +16,7 @@ from src.scorer import (
     SOURCE,
     check_market_phase,
     check_market_regime,
+    generate_long_recommendations,
     generate_recommendations,
 )
 
@@ -34,8 +35,27 @@ class AlreadyRunningError(Exception):
 class PipelineRunResult:
     run_time: datetime
     regime: str | None
-    recommendations: list
-    phase: object | None = None  # BR23 MarketPhase, 표시 전용
+    recommendations: list          # BR18~BR21 단기 트랙
+    phase: object | None = None    # BR23 MarketPhase, 표시 전용
+    long_recommendations: list | None = None  # BR24 장기 트랙
+
+
+_EXCHANGE_EPOCH = datetime(2017, 1, 1, tzinfo=timezone.utc)  # 바이낸스 개장(2017-07)보다 이르면 충분
+
+
+def _is_exchange_earliest(
+    binance_client: BinanceClient, symbol: str, timeframe: str, first_time: datetime
+) -> bool:
+    """보유 중인 최초봉이 거래소가 줄 수 있는 최초봉인가 (= 더 받을 과거가 없는가).
+
+    실패하면 False를 돌려 기존 백필 경로로 떨어진다 -- 이 판단이 틀려서 수집을 건너뛰는 것보다
+    한 번 더 받는 쪽이 안전하다."""
+    try:
+        earliest = binance_client.get_klines(symbol, timeframe, start_time=_EXCHANGE_EPOCH, limit=1)
+    except Exception:
+        logger.warning("Failed to probe earliest candle for %s %s; falling back to backfill", symbol, timeframe, exc_info=True)
+        return False
+    return bool(earliest) and earliest[0].candle_time >= first_time
 
 
 def _collect_and_store_binance(
@@ -52,14 +72,22 @@ def _collect_and_store_binance(
     lookback on their own. Once history is deep enough this branch stops firing and each run costs
     a single request per timeframe.
 
-    Known cost (accepted): a coin listed more recently than the lookback window can never satisfy
-    `first <= target_start`, so it re-fetches its (short) history each run. That is a handful of
-    extra requests per hour, well inside Binance's public rate limit.
+    `first <= target_start`를 그대로 쓰면 **거래소에 없는 과거를 영원히 다시 받는다**. lookback이
+    5년이던 시절엔 최근 상장 코인만 걸려 무시할 만했지만(원 주석의 "accepted cost"), 12년으로
+    늘린 뒤에는 바이낸스 자체가 2017-07 시작이라 **모든 종목이 매 실행마다 전량 재수집** 대상이
+    된다 -- 실측 시간당 약 600요청/136초. 그래서 "거래소가 줄 수 있는 가장 오래된 봉을 이미
+    갖고 있는가"를 함께 본다(종목·타임프레임당 1요청). 있으면 더 받을 과거가 없으므로 증분으로
+    간다. 2026-08-18 lookback 확대로 드러난 결함이다.
     """
     target_start = datetime.now(timezone.utc) - timedelta(days=lookback_days or settings.backtest_lookback_days)
     for timeframe in timeframes:
         try:
             first_time = data_store.get_first_candle_time(SOURCE, symbol, timeframe)
+            if first_time is not None and first_time > target_start and _is_exchange_earliest(
+                binance_client, symbol, timeframe, first_time
+            ):
+                # 거래소의 첫 봉을 이미 보유 -- target_start까지 못 미쳐도 그건 상장 전이라 없는 것이다.
+                first_time = target_start
             if first_time is None or first_time > target_start:
                 candles = binance_client.get_klines_since(symbol, timeframe, target_start)
             else:
@@ -130,10 +158,13 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
         now = datetime.now(timezone.utc)
 
         candidates = binance_market_selector.get_candidate_markets()
+        # 장기 트랙(BR24)은 4시간봉으로 판정하므로 상위 후보에 한해 4시간봉도 모은다.
+        # 전체 후보에 4시간봉을 받지 않는 이유는 단기 트랙이 1시간봉만 쓰기 때문이다.
+        long_candidates = candidates[: settings.long_top_n_candidates]
         for symbol in candidates:
-            _collect_and_store_binance(store, binance_client, symbol, timeframes=("1h",))
-        # BTC 4시간봉은 레짐 판정 전용 (BR20). 후보 코인의 4시간봉은 진입 조건이 1시간봉만
-        # 쓰게 되면서 더는 필요하지 않다. 200일 이동평균 워밍업분을 더 깊게 받는다 -- 그만큼이
+            timeframes = ("1h", REGIME_TIMEFRAME) if symbol in long_candidates else ("1h",)
+            _collect_and_store_binance(store, binance_client, symbol, timeframes=timeframes)
+        # BTC 4시간봉은 레짐 판정 전용 (BR20). 200일 이동평균 워밍업분을 더 깊게 받는다 -- 그만큼이
         # 없으면 백테스트 앞구간에서 반등 판정이 불가능해져 표본이 잘린다.
         # ETH 4시간봉은 BR23 문구 판정 전용이다 -- 추천 후보에는 여전히 들어가지 않는다(BR8).
         for symbol in PHASE_MARKETS:
@@ -147,8 +178,11 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
         regime = check_market_regime(store)
         phase = check_market_phase(store)
         recommendations = generate_recommendations(candidates, store)[: settings.recommendations_per_exchange]
+        long_recommendations = generate_long_recommendations(long_candidates, store, now)[
+            : settings.recommendations_per_exchange
+        ]
 
-        store.save_run(now, regime is not None, recommendations)
+        store.save_run(now, regime is not None, recommendations + long_recommendations)
 
         try:
             send_notification(
@@ -160,12 +194,20 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
                 settings.slack_webhook_url,
                 timeout_seconds=settings.http_timeout_seconds,
                 phase=phase,
+                long_recommendations=long_recommendations,
+                now=now,
             )
         except Exception:
             logger.warning("Notification step failed; pipeline run is still considered successful", exc_info=True)
 
         evaluate_pending_outcomes(store, now)
 
-        return PipelineRunResult(run_time=now, regime=regime, recommendations=recommendations, phase=phase)
+        return PipelineRunResult(
+            run_time=now,
+            regime=regime,
+            recommendations=recommendations,
+            phase=phase,
+            long_recommendations=long_recommendations,
+        )
     finally:
         _lock.release()

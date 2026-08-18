@@ -10,6 +10,12 @@ from src.backtest import (
 )
 from src.data_store import DataStore, close_time
 from src.features import compute_ichimoku
+from src.long_track import (
+    LONG_MIN_SAMPLES,
+    compute_long_stats,
+    cycle_position,
+    long_entry_signal,
+)
 from src.market_phase import MarketPhase, current_phase
 
 SOURCE = "binance"
@@ -18,6 +24,10 @@ ETH_MARKET = "ETHUSDT"
 REGIME_TIMEFRAME = "4h"
 # 문구 판정에 쓰는 자산. 추천 후보에서는 제외돼 있지만(BR8) 시장 국면의 기준으로는 수집한다.
 PHASE_MARKETS = (BTC_MARKET, ETH_MARKET)
+
+
+SHORT_TRACK = "short"
+LONG_TRACK = "long"
 
 
 @dataclass(frozen=True)
@@ -32,6 +42,7 @@ class Recommendation:
     entry_time: datetime | None = None
     entry_price: float | None = None
     max_drawdown: float | None = None
+    track: str = SHORT_TRACK
 
 
 def _regime_series(data_store: DataStore) -> list[tuple[datetime, str | None]]:
@@ -89,6 +100,48 @@ def generate_recommendations(candidates: list[str], data_store: DataStore) -> li
                 entry_time=close_time(entry_candle),
                 entry_price=entry_candle.close,
                 max_drawdown=stats.max_drawdown,
+            )
+        )
+
+    return sorted(recommendations, key=lambda r: r.hit_rate_lower, reverse=True)
+
+
+def generate_long_recommendations(
+    candidates: list[str], data_store: DataStore, now: datetime
+) -> list[Recommendation]:
+    """BR24: 장기 트랙. 반감기 사이클 게이트 -> 4시간봉 진입 조건 -> 같은 연차 표본 하한.
+
+    단기 트랙과 나란히 돌지만 서로의 게이트·수치를 공유하지 않는다. 적중률 문턱을 두지 않는 이유는
+    전체가 42.0%인데 단기의 45% 문턱을 적용하면 표본 13~74건에서 상위값을 고르는 셈이라, 단기
+    트랙 워크포워드에서 실측된 선택 편향(표시 45% vs 실제 38.9%)을 그대로 재현하기 때문이다."""
+    position = cycle_position(now)
+    if position is None or not position.is_open:
+        return []
+
+    recommendations = []
+    for market in candidates:
+        candles_4h = data_store.get_candles(SOURCE, market, REGIME_TIMEFRAME)
+        points_4h = compute_ichimoku(candles_4h)
+        if not points_4h or not long_entry_signal(candles_4h, points_4h, len(points_4h) - 1):
+            continue
+
+        stats = compute_long_stats(market, candles_4h, points_4h, position.year)
+        if stats.n < LONG_MIN_SAMPLES or stats.hit_rate is None:
+            continue
+
+        entry_candle = candles_4h[-1]
+        recommendations.append(
+            Recommendation(
+                market=market,
+                n=stats.n,
+                hit_count=stats.hit_count,
+                hit_rate=stats.hit_rate,
+                hit_rate_lower=stats.hit_rate_lower,
+                expected_return=stats.expected_return,
+                entry_time=close_time(entry_candle),
+                entry_price=entry_candle.close,
+                max_drawdown=stats.max_drawdown,
+                track=LONG_TRACK,
             )
         )
 

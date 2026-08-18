@@ -79,6 +79,7 @@ class RecommendationRecord:
     entry_time: datetime | None = None
     entry_price: float | None = None
     max_drawdown: float | None = None
+    track: str = "short"
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ class MonitoredRecommendation:
     entry_price: float
     entry_time: datetime
     entry_touched_at: datetime | None
+    track: str = "short"
 
 
 _RUNS_SCHEMA = """
@@ -127,7 +129,8 @@ CREATE TABLE IF NOT EXISTS recommendations (
     target_reached INTEGER,
     realized_return REAL,
     evaluated_at TEXT,
-    PRIMARY KEY (run_time, market)
+    track TEXT NOT NULL DEFAULT 'short',
+    PRIMARY KEY (run_time, market, track)
 );
 """
 
@@ -146,12 +149,43 @@ _RECOMMENDATIONS_OUTCOME_COLUMNS = [
     ("entry_touched_at", "TEXT"),
     ("target_hit_at", "TEXT"),
     ("stop_hit_at", "TEXT"),
+    # BR24 2트랙. 기존 행은 전부 단기 트랙이므로 기본값이 그대로 맞다.
+    ("track", "TEXT NOT NULL DEFAULT 'short'"),
 ]
+
+# BR24: PK를 (run_time, market)에서 (run_time, market, track)으로 넓히는 마이그레이션.
+# 같은 종목이 같은 회차에 단기·장기 양쪽에 뽑힐 수 있으므로 기존 PK로는 한쪽이 IntegrityError로
+# 사라진다. SQLite는 PK를 ALTER로 못 바꾸므로 테이블을 다시 만들고 행을 옮긴다.
+_RECOMMENDATIONS_PK_REBUILD = """
+CREATE TABLE recommendations_new (
+    run_time TEXT NOT NULL,
+    market TEXT NOT NULL,
+    expected_return REAL NOT NULL,
+    n INTEGER NOT NULL,
+    hit_count INTEGER NOT NULL,
+    target_reached INTEGER,
+    realized_return REAL,
+    evaluated_at TEXT,
+    source TEXT,
+    entry_time TEXT,
+    entry_price REAL,
+    max_drawdown REAL,
+    entry_touched_at TEXT,
+    target_hit_at TEXT,
+    stop_hit_at TEXT,
+    track TEXT NOT NULL DEFAULT 'short',
+    PRIMARY KEY (run_time, market, track)
+);
+"""
+_REBUILD_COLUMNS = (
+    "run_time, market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at, "
+    "source, entry_time, entry_price, max_drawdown, entry_touched_at, target_hit_at, stop_hit_at, track"
+)
 
 
 _RECOMMENDATIONS_SELECT = (
     "SELECT market, expected_return, n, hit_count, target_reached, realized_return, evaluated_at, source, "
-    "entry_time, entry_price, max_drawdown FROM recommendations"
+    "entry_time, entry_price, max_drawdown, track FROM recommendations"
 )
 
 
@@ -168,6 +202,7 @@ def _row_to_recommendation_record(row) -> RecommendationRecord:
         entry_time,
         entry_price,
         max_drawdown,
+        track,
     ) = row
     return RecommendationRecord(
         market=market,
@@ -181,6 +216,7 @@ def _row_to_recommendation_record(row) -> RecommendationRecord:
         entry_time=None if entry_time is None else datetime.fromisoformat(entry_time),
         entry_price=entry_price,
         max_drawdown=max_drawdown,
+        track=track or "short",
     )
 
 
@@ -219,6 +255,24 @@ class DataStore:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column name" not in str(exc):
                         raise
+            self._widen_recommendations_primary_key(conn)
+
+    @staticmethod
+    def _widen_recommendations_primary_key(conn) -> None:
+        """BR24: 이미 배포된 DB의 PK가 (run_time, market)이면 track을 포함하도록 재구성한다.
+
+        재구성이 필요한지 먼저 확인하고 필요할 때만 수행한다 -- 매 기동마다 테이블을 다시 만들면
+        불필요한 쓰기가 반복되고 실패 지점만 늘어난다."""
+        pk = [row[1] for row in conn.execute("PRAGMA table_info(recommendations)") if row[5]]
+        if "track" in pk:
+            return
+        conn.execute("DROP TABLE IF EXISTS recommendations_new")
+        conn.execute(_RECOMMENDATIONS_PK_REBUILD)
+        conn.execute(
+            f"INSERT INTO recommendations_new ({_REBUILD_COLUMNS}) SELECT {_REBUILD_COLUMNS} FROM recommendations"
+        )
+        conn.execute("DROP TABLE recommendations")
+        conn.execute("ALTER TABLE recommendations_new RENAME TO recommendations")
 
     def upsert_candles(self, source: Source, market: str, timeframe: str, candles: list[Candle]) -> int:
         if not candles:
@@ -327,6 +381,7 @@ class DataStore:
                     entry_time.isoformat() if entry_time is not None else None,
                     getattr(r, "entry_price", None),
                     getattr(r, "max_drawdown", None),
+                    getattr(r, "track", "short"),
                 )
             )
         with self._connect() as conn:
@@ -337,7 +392,7 @@ class DataStore:
             if rows:
                 conn.executemany(
                     "INSERT INTO recommendations (run_time, market, expected_return, n, hit_count, source, "
-                    "entry_time, entry_price, max_drawdown) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "entry_time, entry_price, max_drawdown, track) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                 )
 
@@ -396,7 +451,7 @@ class DataStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT run_time, market, entry_price, entry_time, entry_touched_at, target_hit_at, stop_hit_at
+                SELECT run_time, market, entry_price, entry_time, entry_touched_at, target_hit_at, stop_hit_at, track
                 FROM recommendations
                 WHERE run_time >= ? AND entry_price IS NOT NULL AND entry_time IS NOT NULL
                   AND target_hit_at IS NULL AND stop_hit_at IS NULL
@@ -411,8 +466,9 @@ class DataStore:
                 entry_price=entry_price,
                 entry_time=datetime.fromisoformat(entry_time),
                 entry_touched_at=None if entry_touched_at is None else datetime.fromisoformat(entry_touched_at),
+                track=track or "short",
             )
-            for run_time, market, entry_price, entry_time, entry_touched_at, _, _ in rows
+            for run_time, market, entry_price, entry_time, entry_touched_at, _, _, track in rows
         ]
 
     def mark_price_event(self, run_time: datetime, market: str, event: str, at: datetime) -> None:

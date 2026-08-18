@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from src.backtest import FORWARD_BARS_1H, STOP_LOSS, TARGET_RETURN
+from src.long_track import LONG_HOLD_BARS_4H, LONG_STOP_LOSS, LONG_TARGET_RETURN
 from src.binance_client import BinanceClient
 from src.data_store import ENTRY_TOUCHED, STOP_HIT, TARGET_HIT, DataStore, MonitoredRecommendation
 from src.scorer import SOURCE
@@ -10,6 +11,12 @@ from src.scorer import SOURCE
 logger = logging.getLogger(__name__)
 
 _MONITOR_TIMEFRAME = "1m"
+_LONG_HOLD_HOURS = LONG_HOLD_BARS_4H * 4
+
+
+def _hold_hours(rec) -> int:
+    """BR24: 추천이 살아 있는 기간. 단기 24시간, 장기 90일."""
+    return _LONG_HOLD_HOURS if getattr(rec, "track", "short") == "long" else FORWARD_BARS_1H
 
 
 @dataclass(frozen=True)
@@ -30,8 +37,14 @@ def _events_for(rec: MonitoredRecommendation, candles: list) -> list[PriceEvent]
     한 봉에서 목표가와 손절가를 동시에 만족하면 `simulate_trade`와 동일하게 손절을 먼저
     체결된 것으로 본다. 그리고 둘 중 하나가 나오면 포지션이 끝난 것이므로 즉시 중단한다.
     """
-    target_price = rec.entry_price * (1 + TARGET_RETURN)
-    stop_price = rec.entry_price * (1 - STOP_LOSS)
+    # BR24: 트랙마다 목표·손절이 다르다. 단기 상수를 공유하면 장기 추천이 +3%/-2%에서
+    # 잘못 알림되고, 실제로는 아직 살아 있는 포지션이 종료 처리된다.
+    if getattr(rec, "track", "short") == "long":
+        target_price = rec.entry_price * (1 + LONG_TARGET_RETURN)
+        stop_price = rec.entry_price * (1 - LONG_STOP_LOSS)
+    else:
+        target_price = rec.entry_price * (1 + TARGET_RETURN)
+        stop_price = rec.entry_price * (1 - STOP_LOSS)
     entry_seen = rec.entry_touched_at is not None
     events: list[PriceEvent] = []
 
@@ -57,10 +70,15 @@ def check_price_events(data_store: DataStore, binance_client: BinanceClient, now
     이미 기록된 이벤트는 다시 알리지 않는다(`mark_price_event`가 NULL일 때만 쓰므로 기록 자체가
     중복 방지 장치다). 한 종목의 조회 실패가 나머지 감시를 막지 않는다 -- Unit 1 BR7과 같은 방향.
     """
-    since = now - timedelta(hours=FORWARD_BARS_1H)
+    # BR24: 조회는 넓게(장기 90일) 하고 보유 기간은 **트랙별로** 판정한다. 하나의 창을 공유하면
+    # 24시간으로는 장기 포지션이 하루 만에 감시에서 빠지고, 90일로는 이미 끝난 단기 추천을 계속
+    # 조회한다.
+    since = now - timedelta(hours=max(FORWARD_BARS_1H, _LONG_HOLD_HOURS))
     new_events: list[PriceEvent] = []
 
     for rec in data_store.get_monitorable_recommendations(since):
+        if rec.run_time < now - timedelta(hours=_hold_hours(rec)):
+            continue
         try:
             candles = binance_client.get_klines_since(rec.market, _MONITOR_TIMEFRAME, rec.entry_time, max_requests=3)
         except Exception:

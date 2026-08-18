@@ -143,7 +143,7 @@ def test_get_klines_since_returns_empty_when_no_history():
 
 def test_pagination_guard_covers_the_configured_lookback():
     """상한이 모자라면 예외 없이 조용히 잘려, 설정한 lookback보다 짧은 이력으로 백테스트가 돈다.
-    5년치 1시간봉 = 43,800봉 = 44페이지."""
+    12년치 1시간봉 = 105,120봉 = 106페이지."""
     from src.binance_client import _MAX_LIMIT, _MAX_PAGES
     from src.config import settings
 
