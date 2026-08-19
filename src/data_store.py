@@ -556,13 +556,49 @@ class DataStore:
         return {"by_track": by_track, "total": total}
 
     def get_pending_evaluations(self, older_than: datetime) -> list[tuple[str, datetime, str]]:
-        """BR12: (market, run_time, source) triples not yet evaluated, whose 24h window has already closed."""
+        """BR12: (market, run_time, source) triples not yet evaluated, whose window has already closed."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT market, run_time, source FROM recommendations WHERE evaluated_at IS NULL AND run_time <= ?",
                 (older_than.isoformat(),),
             ).fetchall()
         return [(market, datetime.fromisoformat(run_time_str), source or "upbit") for market, run_time_str, source in rows]
+
+    def get_unevaluated(self, now: datetime) -> list[tuple]:
+        """BR39: 사후 판정이 남은 추천. (run_time, market, track, entry_time, entry_price,
+        target_hit_at, stop_hit_at)를 돌려준다.
+
+        보유 창이 지났는지는 **트랙마다 다르므로** 호출자가 판단한다 -- 여기서 24시간으로 자르면
+        48시간짜리 장기 트랙이 절반만 지난 시점에 판정된다."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT run_time, market, track, entry_time, entry_price, target_hit_at, stop_hit_at "
+                "FROM recommendations WHERE evaluated_at IS NULL AND entry_time IS NOT NULL"
+            ).fetchall()
+        return [
+            (
+                datetime.fromisoformat(run_time),
+                market,
+                track or "regime",
+                datetime.fromisoformat(entry_time),
+                entry_price,
+                datetime.fromisoformat(target_hit_at) if target_hit_at else None,
+                datetime.fromisoformat(stop_hit_at) if stop_hit_at else None,
+            )
+            for run_time, market, track, entry_time, entry_price, target_hit_at, stop_hit_at in rows
+        ]
+
+    def record_track_outcome(
+        self, run_time: datetime, market: str, track: str, target_reached: bool, realized_return: float,
+        evaluated_at: datetime,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE recommendations SET target_reached = ?, realized_return = ?, evaluated_at = ? "
+                "WHERE run_time = ? AND market = ? AND track = ?",
+                (int(target_reached), realized_return, evaluated_at.isoformat(),
+                 run_time.isoformat(), market, track),
+            )
 
     def get_monitorable_recommendations(self, since: datetime) -> list[MonitoredRecommendation]:
         """BR22: `since` 이후에 나온 추천 중 아직 종료되지 않은 것들.
@@ -607,26 +643,6 @@ class DataStore:
                 f"UPDATE recommendations SET {column} = ? "
                 f"WHERE run_time = ? AND market = ? AND track = ? AND {column} IS NULL",
                 (at.isoformat(), run_time.isoformat(), market, track),
-            )
-
-    def record_outcome(self, outcome) -> None:
-        """BR9/BR11: persists a RecommendationOutcome onto its recommendation row.
-        `outcome` just needs .market/.run_time/.target_reached/.realized_return/.evaluated_at (duck-typed,
-        avoids importing backtest.RecommendationOutcome -- same pattern as save_run)."""
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE recommendations
-                SET target_reached = ?, realized_return = ?, evaluated_at = ?
-                WHERE run_time = ? AND market = ?
-                """,
-                (
-                    int(outcome.target_reached),
-                    outcome.realized_return,
-                    outcome.evaluated_at.isoformat(),
-                    outcome.run_time.isoformat(),
-                    outcome.market,
-                ),
             )
 
     def ping(self) -> bool:

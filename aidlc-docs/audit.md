@@ -1921,3 +1921,18 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation.
 
 ---
+## Diagnostic Request (2026-08-20): 하드코딩 잔재 점검 + 백테스트 로직 재점검
+**Timestamp**: 2026-08-20T03:20:00Z
+**User Input**: "Using AI-DLC 점검해주고, 백테스트도 재점검해줘. 어떤 로직으로 백테스트를 진행하고 있는지도, 데이터에 따라 유동적으로 조금 바뀌는건지."
+**AI Response**: (1) 트랙 스펙 대신 기존 트랙 상수를 쓰는 자리 전수 조사, (2) 백테스트 산출 경로와 데이터 의존성 점검.
+**Context**: 진단.
+
+---
+
+## Construction — Code Generation (BR39/BR40 + 백테스트 점검)
+**Timestamp**: 2026-08-20T00:00:00Z
+**User Input**: "Using AI-DLC 점검해주고, 백테스트도 재점검해줘. 어떤 로직으로 백테스트를 진행하고 있는지도, 데이터에 따라 유동적으로 조금 바뀌는건지."
+**AI Response**: 트랙 파라미터화 잔재 2건을 찾아 수정. (1) BR39 — 결과 판정이 감시(트랙별/1분봉)와 실적(레거시 +3%/-2%/24h/1시간봉) 두 곳에서 다른 규칙으로 돌고 있었음. 감시 기록에서 유도하도록 통일하고 `evaluate_outcome`·`RecommendationOutcome`·`record_outcome` 고아 제거. (2) BR40 — `/recommendations` 만료가 회차 단위 24시간 일괄 적용이라 장기(48h)는 조기 소멸, 단타(8h)는 16시간 초과 노출. 트랙별 `exit_deadline`으로 판정하도록 수정. 백테스트는 캐시 없이 매 회차 전체 이력 재계산이며, 30종목 실측상 3개월간 도달률 변동 0.3%p 이내(안정), 다만 이력 길이를 1년으로 줄이면 XRP 단타가 30.6%→15.8%로 붕괴 — 안정성은 9년 깊이에서 나옴. 테스트 261건 통과.
+**Context**: Construction / Code Generation — 정합성 점검 및 백테스트 로직 문서화
+
+---

@@ -146,9 +146,21 @@ def _to_run_summary(run) -> RunSummary:
 
 
 def _is_expired(run_time: datetime | None, now: datetime) -> bool:
-    """BR17: every recommendation in a run shares its hour, so run-level expiry is enough and it also
-    covers legacy rows that predate entry_time."""
+    """BR17: entry_time이 없는 옛 행을 위한 회차 단위 만료. 트랙이 붙은 행은 _live_recommendations가
+    각자의 보유기간으로 판정한다."""
     return run_time is not None and now > run_time + _VALIDITY_WINDOW
+
+
+def _live_recommendations(summary: RunSummary, now: datetime) -> list[RecommendationOut]:
+    """BR40: 트랙마다 보유 기간이 다르다(단타 8h · 중기 24h · 장기 48h). 회차 단위로 24시간을
+    일괄 적용하면 장기 추천이 마감 24시간 전에 사라지고, 단타는 마감 후 16시간을 더 살아 있다.
+    exit_deadline은 이미 트랙별로 계산돼 있으므로 그것으로 판정한다."""
+    legacy_expired = _is_expired(summary.run_time, now)
+    return [
+        r
+        for r in summary.recommendations
+        if not (legacy_expired if r.exit_deadline is None else now > r.exit_deadline)
+    ]
 
 
 @app.get("/recommendations", response_model=RecommendationsResponse)
@@ -173,15 +185,21 @@ def get_recommendations(limit: int = 1) -> RecommendationsResponse:
                 run_time=None, regime_bullish=False, recommendations=[], market_phase=phase
             )
         summary = _to_run_summary(latest)
-        if _is_expired(latest.run_time, now):
+        live = _live_recommendations(summary, now)
+        if not live:
             return RecommendationsResponse(
                 run_time=summary.run_time,
                 regime_bullish=summary.regime_bullish,
                 recommendations=[],
-                expired=True,
+                expired=_is_expired(latest.run_time, now),
                 market_phase=phase,
             )
-        return RecommendationsResponse(**summary.model_dump(), market_phase=phase)
+        return RecommendationsResponse(
+            run_time=summary.run_time,
+            regime_bullish=summary.regime_bullish,
+            recommendations=live,
+            market_phase=phase,
+        )
 
     runs = store.get_recent_runs(limit=limit)
     if not runs:
@@ -189,8 +207,8 @@ def get_recommendations(limit: int = 1) -> RecommendationsResponse:
             run_time=None, regime_bullish=False, recommendations=[], history=[], market_phase=phase
         )
     history = [_to_run_summary(r) for r in runs]
-    expired = _is_expired(runs[0].run_time, now)
-    latest_recommendations = [] if expired else history[0].recommendations
+    latest_recommendations = _live_recommendations(history[0], now)
+    expired = _is_expired(runs[0].run_time, now) if not latest_recommendations else False
     return RecommendationsResponse(
         run_time=history[0].run_time,
         regime_bullish=history[0].regime_bullish,

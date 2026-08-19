@@ -68,15 +68,6 @@ class TradeOutcome:
     drawdown: float
 
 
-@dataclass(frozen=True)
-class RecommendationOutcome:
-    market: str
-    run_time: datetime
-    target_reached: bool
-    realized_return: float
-    evaluated_at: datetime
-
-
 def wilson_lower(hits: int, n: int, z: float = 1.96) -> float:
     """비율의 95% 신뢰 하한. 3/3을 1.00이 아니라 0.44로 돌려주므로, 표본이 얇은 코인이 적중률
     100%로 목록 상단을 차지하는 일을 막는다."""
@@ -245,28 +236,3 @@ def aggregate_stats(market: str, results: list[TradeOutcome]) -> SignalStats:
     )
 
 
-def evaluate_outcome(market: str, run_time: datetime, candles_1h: list[Candle], now: datetime) -> RecommendationOutcome | None:
-    """BR11: 과거 추천 1건을 사후 판정한다. 판정 규칙은 `simulate_trade`와 동일해야 한다 --
-    추천할 때 쓴 확률과 사후에 매기는 성패가 다른 기준이면 적중률 기록이 의미를 잃는다.
-
-    아직 판정할 데이터가 모이지 않았으면 None (호출자가 다음 회차에 재시도)."""
-    entry_index = None
-    for index, candle in enumerate(candles_1h):
-        if candle.candle_time > run_time:
-            break
-        entry_index = index
-
-    if entry_index is None:
-        return None
-
-    outcome = simulate_trade(candles_1h, entry_index)
-    if outcome is None:
-        return None
-
-    return RecommendationOutcome(
-        market=market,
-        run_time=run_time,
-        target_reached=outcome.result == "win",
-        realized_return=outcome.ret,
-        evaluated_at=now,
-    )

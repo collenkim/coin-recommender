@@ -3,10 +3,10 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from src.backtest import REGIME_WARMUP_DAYS, evaluate_outcome
+from src.backtest import FORWARD_BARS_1H, REGIME_WARMUP_DAYS, STOP_LOSS, TARGET_RETURN
 from src.binance_client import BinanceClient
 from src.config import settings
-from src.data_store import TIMEFRAME_HOURS, DataStore
+from src.data_store import TIMEFRAME_HOURS, DataStore, close_time
 from src.market_selector import BinanceMarketSelector
 from src.monitor import check_price_events
 from src.notifier import send_notification, send_price_alert
@@ -20,7 +20,7 @@ from src.scorer import (
     generate_all_tracks,
     generate_recommendations,
 )
-from src.tracks import COLLECTED_TIMEFRAMES, TRACKS
+from src.tracks import COLLECTED_TIMEFRAMES, TRACK_BY_KEY, TRACKS
 
 _EVALUATION_WINDOW_HOURS = 24
 # BR31: 중복 알림 억제 조회 범위. 가장 긴 트랙 보유(7일)보다 넉넉해야 같은 진입봉이 다시 알려지지 않는다.
@@ -192,18 +192,48 @@ def run_price_monitor(data_store: DataStore | None = None) -> list:
 
 
 def evaluate_pending_outcomes(data_store: DataStore, now: datetime) -> None:
-    """BR9: for each unevaluated recommendation whose 24h window has closed, judge and persist the
-    outcome (Unit 2 BR11/BR12). Isolated per-item failure -- one market's missing/bad data must not
-    block the rest."""
-    cutoff = now - timedelta(hours=_EVALUATION_WINDOW_HOURS)
-    for market, run_time, source in data_store.get_pending_evaluations(older_than=cutoff):
+    """BR39: 보유 창이 끝난 추천의 성패를 확정한다.
+
+    **감시 기록(BR22)에서 유도한다 -- 별도로 다시 판정하지 않는다.** 이전에는 `evaluate_outcome`이
+    1시간봉으로 레거시 규칙(+3%/-2%/24시간)을 적용해 **모든 트랙을 같은 기준으로** 판정했다.
+    감시는 1분봉으로 트랙별 목표·손절을 보므로 두 판정이 어긋날 수밖에 없었고, 어느 쪽이 맞는지도
+    불분명했다. 판정 주체를 감시 하나로 모은다.
+
+    타임아웃(목표·손절 둘 다 미도달)만 종가로 수익률을 계산한다.
+    한 건의 실패가 나머지를 막지 않는다."""
+    for run_time, market, track, entry_time, entry_price, target_hit, stop_hit in data_store.get_unevaluated(now):
         try:
-            candles_1h = data_store.get_candles(source, market, "1h")
-            outcome = evaluate_outcome(market, run_time, candles_1h, now)
-            if outcome is not None:
-                data_store.record_outcome(outcome)
+            spec = TRACK_BY_KEY.get(track)
+            target, stop, hold_hours = (
+                (spec.target, spec.stop, spec.hold_hours) if spec else (TARGET_RETURN, STOP_LOSS, FORWARD_BARS_1H)
+            )
+            deadline = entry_time + timedelta(hours=hold_hours)
+            if target_hit is not None:
+                reached, realized = True, target
+            elif stop_hit is not None:
+                reached, realized = False, -stop
+            elif now >= deadline:
+                closing = _price_at(data_store, market, deadline)
+                if closing is None or not entry_price:
+                    continue
+                realized = closing / entry_price - 1
+                reached = False
+            else:
+                continue  # 아직 진행 중
+            data_store.record_track_outcome(run_time, market, track, reached, realized, now)
         except Exception:
-            logger.warning("Failed to evaluate outcome for %s %s; will retry next run", market, run_time, exc_info=True)
+            logger.warning("Failed to evaluate outcome for %s %s %s", market, track, run_time, exc_info=True)
+
+
+def _price_at(data_store: DataStore, market: str, moment: datetime) -> float | None:
+    """`moment` 시점에 마감된 마지막 30분봉 종가. 없으면 None."""
+    candles = data_store.get_candles(SOURCE, market, "30m")
+    closing = None
+    for candle in candles:
+        if close_time(candle) > moment:
+            break
+        closing = candle.close
+    return closing
 
 
 def run_recommendation_pipeline(data_store: DataStore | None = None) -> PipelineRunResult:

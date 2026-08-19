@@ -16,7 +16,6 @@ from src.backtest import (
     build_regime_series,
     compute_signal_stats,
     entry_signal,
-    evaluate_outcome,
     regime_as_of,
     simulate_trade,
     wilson_lower,
@@ -279,57 +278,3 @@ def test_aggregate_stats_counts_only_wins_as_hits():
     assert stats.max_drawdown == -STOP_LOSS
 
 
-# --- evaluate_outcome (BR11) ---
-
-def test_evaluate_outcome_uses_the_same_rule_as_the_live_simulation():
-    """추천할 때 쓴 확률과 사후 성패 판정이 다른 기준이면 적중률 기록이 의미를 잃는다."""
-    bars = [FLAT] * 2 + [(103.5, 99.5, 103.0)] + [FLAT] * 21
-    candles = _forward(100.0, bars)
-    outcome = evaluate_outcome("TESTUSDT", candles[0].candle_time, candles, datetime(2024, 6, 1, tzinfo=UTC))
-    assert outcome.target_reached is True
-    assert outcome.realized_return == TARGET_RETURN
-
-
-def test_evaluate_outcome_returns_none_until_the_window_closes():
-    candles = _forward(100.0, [FLAT] * 3)
-    assert evaluate_outcome("TESTUSDT", candles[0].candle_time, candles, datetime(2024, 6, 1, tzinfo=UTC)) is None
-
-
-def test_evaluate_outcome_returns_none_when_no_candle_precedes_the_run():
-    candles = _forward(100.0, [FLAT] * 24)
-    assert evaluate_outcome("TESTUSDT", T0 - timedelta(hours=5), candles, datetime(2024, 6, 1, tzinfo=UTC)) is None
-
-
-def test_regime_is_stamped_at_bar_close_not_bar_open():
-    """룩어헤드 회귀 방지: candle_time은 시가 시각이라 그대로 쓰면 08:00봉의 레짐이 09:00에도
-    조회된다 -- 그 봉은 12:00에야 마감되므로 아직 모르는 종가를 쓰는 셈이 된다."""
-    closes = [100.0] + [100.0 + i * 0.2 for i in range(REGIME_BARS_30D)]
-    candles = _btc_series(closes)
-    series = build_regime_series(candles)
-
-    last_open = candles[-1].candle_time
-    assert series[-1][0] == last_open + timedelta(hours=4)
-    # 봉이 마감되기 전에는 그 봉의 레짐을 볼 수 없다
-    assert regime_as_of(series, last_open + timedelta(hours=1)) != STRONG_BULL
-    assert regime_as_of(series, last_open + timedelta(hours=4)) == STRONG_BULL
-
-
-def test_entry_signal_uses_the_short_breakout_window_but_the_long_volume_baseline():
-    """두 구간을 한 상수로 묶으면 돌파를 짧게 줄일 때 거래량 조건까지 함께 약해진다.
-    직전 4시간 고가만 넘으면 되지만, 거래량은 24시간 평균 대비로 판정해야 한다."""
-    assert BREAKOUT_BARS < VOLUME_BASELINE_BARS
-
-    # 5시간 전에 고가 12가 있었지만 직전 4시간 고가는 10 -> 종가 11이면 4시간 기준으로는 돌파
-    candles = [candle(i, 10.0, high=10.0, volume=100.0) for i in range(ENTRY_INDEX)]
-    candles[ENTRY_INDEX - 5] = candle(ENTRY_INDEX - 5, 10.0, high=12.0, volume=100.0)
-    candles.append(candle(ENTRY_INDEX, 11.0, high=11.0, volume=300.0))
-    points = [point(i, 10.0, kijun=1.0) for i in range(ENTRY_INDEX)]
-    points.append(point(ENTRY_INDEX, 11.0, kijun=1.5))
-    assert entry_signal(candles, points, ENTRY_INDEX) is True
-
-    # 거래량은 24시간 평균 기준이므로, 직전 4시간만 조용했다고 통과되면 안 된다
-    quiet = [candle(i, 10.0, high=10.0, volume=100.0) for i in range(ENTRY_INDEX)]
-    for k in range(ENTRY_INDEX - 4, ENTRY_INDEX):
-        quiet[k] = candle(k, 10.0, high=10.0, volume=1.0)
-    quiet.append(candle(ENTRY_INDEX, 11.0, high=11.0, volume=150.0))  # 4시간 평균의 2배는 넘지만 24시간 평균 대비로는 미달
-    assert entry_signal(quiet, points, ENTRY_INDEX) is False

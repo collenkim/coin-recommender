@@ -321,3 +321,33 @@ def test_unhandled_exception_returns_generic_500_body():
     assert response.status_code == 500
     assert response.json() == {"detail": "internal error"}
     assert "unexpected internal detail" not in response.text
+
+
+def test_each_track_expires_on_its_own_hold_window():
+    """BR40: 회차 단위 24시간을 일괄 적용하면 장기(48h)가 절반에서 사라지고 단타(8h)는
+    마감 뒤 16시간을 더 살아 있다. 트랙별 exit_deadline으로 판정해야 한다."""
+    from src.data_store import PipelineRunResult as StoredRun
+    from src.data_store import RecommendationRecord
+
+    run_time = datetime.now(UTC) - timedelta(hours=30)  # 단타·중기는 마감, 장기(48h)는 유효
+    def rec(track):
+        return RecommendationRecord(
+            "SOLUSDT", 0.05, 100, 30, source="binance",
+            entry_time=run_time, entry_price=100.0, track=track,
+        )
+
+    mock_store = MagicMock()
+    mock_store.get_latest_run.return_value = StoredRun(
+        run_time=run_time, regime_bullish=True,
+        recommendations=[rec("day"), rec("mid"), rec("long")],
+    )
+
+    with patch("src.api.start_scheduler"), patch("src.api.stop_scheduler"), \
+         patch("src.api.DataStore", return_value=mock_store):
+        from src.api import app
+
+        with TestClient(app) as client:
+            body = client.get("/recommendations").json()
+
+    assert [r["track"] for r in body["recommendations"]] == ["long"]
+    assert body["expired"] is False

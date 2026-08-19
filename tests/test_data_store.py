@@ -324,21 +324,6 @@ def test_get_pending_evaluations_includes_source(tmp_path):
     assert pending == [("SOLUSDT", run_time, "binance")]
 
 
-def test_record_outcome_then_reflected_in_get_latest_run(tmp_path):
-    store = make_store(tmp_path)
-    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    evaluated_at = datetime(2024, 1, 2, tzinfo=timezone.utc)
-    store.save_run(run_time, True, [FakeRecommendation("KRW-XRP", 0.05, 3, 1)])
-
-    store.record_outcome(FakeOutcome("KRW-XRP", run_time, True, 0.06, evaluated_at))
-
-    result = store.get_latest_run()
-    assert result.recommendations == [
-        RecommendationRecord("KRW-XRP", 0.05, 3, 1, target_reached=True, realized_return=0.06, evaluated_at=evaluated_at)
-    ]
-    assert store.get_pending_evaluations(older_than=run_time) == []  # no longer pending
-
-
 def test_get_recent_runs_returns_newest_first(tmp_path):
     store = make_store(tmp_path)
     earlier = datetime(2024, 1, 1, tzinfo=timezone.utc)

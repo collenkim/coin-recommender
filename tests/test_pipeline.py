@@ -5,6 +5,7 @@ import pytest
 
 from src.backtest import STRONG_BULL
 from src.config import settings
+from src.data_store import STOP_HIT, TARGET_HIT
 from src.pipeline import AlreadyRunningError, _lock, evaluate_pending_outcomes, run_recommendation_pipeline
 
 
@@ -233,59 +234,78 @@ def test_binance_collection_uses_incremental_once_history_is_deep_enough():
 
 # --- evaluate_pending_outcomes (BR9) ---
 
-def test_evaluate_pending_outcomes_records_outcome_for_each_pending():
-    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    now = datetime(2024, 1, 3, tzinfo=timezone.utc)
-    mock_store = MagicMock()
-    mock_store.get_pending_evaluations.return_value = [("KRW-XRP", run_time, "upbit")]
-    fake_outcome = MagicMock()
+def _store_with(tmp_path, track, target_hit=None, stop_hit=None, entry_time=None):
+    from src.data_store import DataStore
 
-    with patch("src.pipeline.evaluate_outcome", return_value=fake_outcome) as mock_evaluate:
-        evaluate_pending_outcomes(mock_store, now)
+    store = DataStore(str(tmp_path / "e.db"))
+    entry = entry_time or datetime(2026, 8, 20, tzinfo=timezone.utc)
 
-    mock_store.get_candles.assert_called_once_with("upbit", "KRW-XRP", "1h")
-    mock_evaluate.assert_called_once_with("KRW-XRP", run_time, mock_store.get_candles.return_value, now)
-    mock_store.record_outcome.assert_called_once_with(fake_outcome)
+    class R:
+        market = "SOLUSDT"
+        expected_return = 0.01
+        n = 100
+        hit_count = 30
+        source = "binance"
+        entry_price = 100.0
+        max_drawdown = -0.01
 
-
-def test_evaluate_pending_outcomes_uses_the_correct_source_per_item():
-    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    now = datetime(2024, 1, 3, tzinfo=timezone.utc)
-    mock_store = MagicMock()
-    mock_store.get_pending_evaluations.return_value = [("SOLUSDT", run_time, "binance")]
-
-    with patch("src.pipeline.evaluate_outcome", return_value=None):
-        evaluate_pending_outcomes(mock_store, now)
-
-    mock_store.get_candles.assert_called_once_with("binance", "SOLUSDT", "1h")
+    R.track = track
+    R.entry_time = entry
+    store.save_run(entry, True, [R()])
+    if target_hit:
+        store.mark_price_event(entry, "SOLUSDT", TARGET_HIT, target_hit, track)
+    if stop_hit:
+        store.mark_price_event(entry, "SOLUSDT", STOP_HIT, stop_hit, track)
+    return store, entry
 
 
-def test_evaluate_pending_outcomes_skips_when_not_yet_judgeable():
-    run_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    now = datetime(2024, 1, 3, tzinfo=timezone.utc)
-    mock_store = MagicMock()
-    mock_store.get_pending_evaluations.return_value = [("KRW-XRP", run_time, "upbit")]
+def test_outcome_is_derived_from_the_monitor_record_not_rejudged(tmp_path):
+    """BR39: 이전에는 사후 판정이 1시간봉으로 레거시 규칙(+3%/-2%/24h)을 적용해 **모든 트랙을
+    같은 기준으로** 판정했다. 감시는 1분봉으로 트랙별 목표를 보므로 둘이 어긋날 수밖에 없었다."""
+    from src.data_store import TARGET_HIT
+    from src.pipeline import evaluate_pending_outcomes
+    from src.tracks import TRACK_BY_KEY
 
-    with patch("src.pipeline.evaluate_outcome", return_value=None):
-        evaluate_pending_outcomes(mock_store, now)
+    store, entry = _store_with(tmp_path, "long", target_hit=datetime(2026, 8, 20, 5, tzinfo=timezone.utc))
+    evaluate_pending_outcomes(store, entry + timedelta(hours=60))
 
-    mock_store.record_outcome.assert_not_called()
+    run = store.get_latest_run()
+    rec = run.recommendations[0]
+    assert rec.target_reached is True
+    assert rec.realized_return == TRACK_BY_KEY["long"].target  # 레거시 3%가 아니라 장기 10%
 
 
-def test_evaluate_pending_outcomes_isolates_per_item_failure():
-    now = datetime(2024, 1, 3, tzinfo=timezone.utc)
-    mock_store = MagicMock()
-    mock_store.get_pending_evaluations.return_value = [
-        ("KRW-BROKEN", datetime(2024, 1, 1, tzinfo=timezone.utc), "upbit"),
-        ("KRW-OK", datetime(2024, 1, 1, tzinfo=timezone.utc), "upbit"),
-    ]
-    fake_outcome = MagicMock()
+def test_stop_hit_is_recorded_with_the_track_stop(tmp_path):
+    from src.data_store import STOP_HIT
+    from src.pipeline import evaluate_pending_outcomes
+    from src.tracks import TRACK_BY_KEY
 
-    with patch("src.pipeline.evaluate_outcome", side_effect=[RuntimeError("bad data"), fake_outcome]):
-        evaluate_pending_outcomes(mock_store, now)  # should not raise
+    store, entry = _store_with(tmp_path, "mid", stop_hit=datetime(2026, 8, 20, 1, tzinfo=timezone.utc))
+    evaluate_pending_outcomes(store, entry + timedelta(hours=30))
 
-    mock_store.record_outcome.assert_called_once_with(fake_outcome)
+    rec = store.get_latest_run().recommendations[0]
+    assert rec.target_reached is False
+    assert rec.realized_return == -TRACK_BY_KEY["mid"].stop  # 레거시 -2%가 아니라 중기 -4%
 
+
+def test_in_progress_recommendations_are_left_unevaluated(tmp_path):
+    """보유 창이 지나기 전에 판정하면 BR24의 '미완료 매매 집계' 결함이 반복된다."""
+    from src.pipeline import evaluate_pending_outcomes
+
+    store, entry = _store_with(tmp_path, "long")  # 도달 없음
+    evaluate_pending_outcomes(store, entry + timedelta(hours=10))  # 장기 창은 48시간
+
+    assert store.get_latest_run().recommendations[0].target_reached is None
+
+
+def test_evaluation_isolates_per_item_failure(tmp_path):
+    from unittest.mock import patch
+
+    from src.pipeline import evaluate_pending_outcomes
+
+    store, entry = _store_with(tmp_path, "day")
+    with patch.object(type(store), "record_track_outcome", side_effect=RuntimeError("db down")):
+        evaluate_pending_outcomes(store, entry + timedelta(hours=30))  # 예외가 새어나오지 않아야 한다
 
 def test_earliest_probe_is_cached_so_later_runs_skip_the_request(tmp_path):
     """BR28: 거래소 최초봉은 바뀌지 않는 값이다. 캐시가 있으면 조회 없이 증분으로 간다 --
