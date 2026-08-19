@@ -27,6 +27,7 @@ def _patched_pipeline(**overrides):
 
     mock_store = MagicMock()
     mock_store.get_first_candle_time.return_value = None
+    mock_store.get_last_candle_time.return_value = None  # BR29: 이력 없음 -> 수집 필요
     mock_binance_selector_instance = MagicMock()
     mock_binance_selector_instance.get_candidate_markets.return_value = defaults["binance_selector_markets"]
 
@@ -123,6 +124,7 @@ def test_recommendations_are_capped():
 def test_binance_candidate_collection_failure_for_one_timeframe_does_not_abort_pipeline():
     mock_store = MagicMock()
     mock_store.get_first_candle_time.return_value = None
+    mock_store.get_last_candle_time.return_value = None
     mock_binance = MagicMock()
     mock_binance.get_klines_since.side_effect = RuntimeError("network error")
 
@@ -137,6 +139,7 @@ def test_binance_candidate_collection_failure_for_one_timeframe_does_not_abort_p
 def test_binance_candidate_collection_stores_both_timeframes():
     mock_store = MagicMock()
     mock_store.get_first_candle_time.return_value = None
+    mock_store.get_last_candle_time.return_value = None
     mock_binance = MagicMock()
 
     from src.pipeline import _collect_and_store_binance
@@ -159,6 +162,7 @@ def test_binance_collection_backfills_when_stored_history_is_shallower_than_look
     incremental path only ever moves forward."""
     mock_store = MagicMock()
     mock_store.get_first_candle_time.return_value = datetime.now(timezone.utc) - timedelta(days=10)
+    mock_store.get_last_candle_time.return_value = None  # BR29: 최신 봉이 없으니 수집 필요
     mock_store.get_exchange_earliest.return_value = None  # 캐시 미보유 -> 조회
     mock_binance = MagicMock()
     # 거래소는 훨씬 오래된 봉을 갖고 있다 -- 아직 받을 과거가 남았으므로 백필해야 한다.
@@ -194,6 +198,7 @@ def test_binance_collection_backfills_when_the_earliest_probe_fails():
     """판단이 불가능하면 백필로 떨어진다 -- 잘못 건너뛰어 이력이 비는 것보다 한 번 더 받는 게 낫다."""
     mock_store = MagicMock()
     mock_store.get_first_candle_time.return_value = datetime(2017, 11, 6, tzinfo=timezone.utc)
+    mock_store.get_last_candle_time.return_value = None  # BR29: 최신 봉이 없으니 수집 필요
     mock_store.get_exchange_earliest.return_value = None  # 캐시 미보유 -> 조회 시도 -> 실패
     mock_binance = MagicMock()
     mock_binance.get_klines.side_effect = RuntimeError("probe failed")
@@ -313,3 +318,40 @@ def test_exchange_earliest_round_trips_through_the_store(tmp_path):
     moment = datetime(2020, 8, 11, tzinfo=timezone.utc)
     store.set_exchange_earliest("binance", "SOLUSDT", "4h", moment, datetime.now(timezone.utc))
     assert store.get_exchange_earliest("binance", "SOLUSDT", "4h") == moment
+
+
+def test_collection_is_skipped_when_no_new_bar_has_closed_yet(tmp_path):
+    """BR29: 주봉은 주 1회, 월봉은 월 1회만 새 봉이 생긴다. 매시간 물어볼 이유가 없다."""
+    from src.data_store import Candle, DataStore
+    from src.pipeline import _collect_and_store_binance
+
+    store = DataStore(str(tmp_path / "f.db"))
+    just_closed = datetime.now(timezone.utc) - timedelta(hours=1)
+    store.upsert_candles(
+        "binance", "SOLUSDT", "1w",
+        [Candle("SOLUSDT", "1w", just_closed - timedelta(days=7), 1, 1, 1, 1, 1.0)],
+    )
+    mock_binance = MagicMock()
+
+    _collect_and_store_binance(store, mock_binance, "SOLUSDT", timeframes=("1w",))
+
+    mock_binance.get_klines.assert_not_called()
+    mock_binance.get_klines_since.assert_not_called()
+
+
+def test_collection_runs_once_the_next_bar_has_closed(tmp_path):
+    from src.data_store import Candle, DataStore
+    from src.pipeline import _collect_and_store_binance
+
+    store = DataStore(str(tmp_path / "f.db"))
+    stale = datetime.now(timezone.utc) - timedelta(days=30)
+    store.upsert_candles(
+        "binance", "SOLUSDT", "1w", [Candle("SOLUSDT", "1w", stale, 1, 1, 1, 1, 1.0)]
+    )
+    store.set_exchange_earliest("binance", "SOLUSDT", "1w", stale, datetime.now(timezone.utc))
+    mock_binance = MagicMock()
+    mock_binance.get_klines.return_value = []
+
+    _collect_and_store_binance(store, mock_binance, "SOLUSDT", timeframes=("1w",))
+
+    mock_binance.get_klines.assert_called_once()  # 증분 조회

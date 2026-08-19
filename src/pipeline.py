@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from src.backtest import REGIME_WARMUP_DAYS, evaluate_outcome
 from src.binance_client import BinanceClient
 from src.config import settings
-from src.data_store import DataStore
+from src.data_store import TIMEFRAME_HOURS, DataStore
 from src.market_selector import BinanceMarketSelector
 from src.monitor import check_price_events
 from src.notifier import send_notification, send_price_alert
@@ -72,6 +72,19 @@ def _is_exchange_earliest(
     return earliest[0].candle_time >= first_time
 
 
+def _is_up_to_date(data_store: DataStore, symbol: str, timeframe: str) -> bool:
+    """BR29: 마지막 저장 봉 다음 봉이 아직 마감되지 않았으면 True (조회 불필요).
+
+    `close_time`이 봉의 마감 시각을 주므로, 마지막 저장 봉의 **다음** 봉이 마감될 시각을 계산해
+    지금과 비교한다. 이력이 없으면 False -- 받아야 한다."""
+    last = data_store.get_last_candle_time(SOURCE, symbol, timeframe)
+    if last is None:
+        return False
+    interval = timedelta(hours=TIMEFRAME_HOURS[timeframe])
+    next_close = last + interval * 2  # 마지막 봉의 다음 봉이 마감되는 시각
+    return datetime.now(timezone.utc) < next_close
+
+
 def _collect_and_store_binance(
     data_store: DataStore,
     binance_client: BinanceClient,
@@ -95,6 +108,11 @@ def _collect_and_store_binance(
     """
     default_lookback = lookback_days or settings.backtest_lookback_days
     for timeframe in timeframes:
+        # BR29: 아직 새 봉이 마감되지 않았으면 조회 자체를 건너뛴다. 주봉은 주 1회, 월봉은 월 1회만
+        # 새 봉이 생기는데 매시간 물어보고 있었다 -- 30종 x 7봉이면 시간당 210요청 중 상당수가
+        # "변화 없음"을 확인하는 데만 쓰였다.
+        if _is_up_to_date(data_store, symbol, timeframe):
+            continue
         # BR25: 짧은 봉은 얕게 받는다 -- 15분봉에 16년을 요구하면 561페이지가 필요해
         # _MAX_PAGES에서 조용히 잘린다. 트랙에 필요한 건 최대 이력이 아니라 충분한 표본이다.
         target_start = datetime.now(timezone.utc) - timedelta(
