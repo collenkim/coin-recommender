@@ -1821,3 +1821,42 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: 진단.
 
 ---
+## Follow-up Request (2026-08-19): 역프(김치 프리미엄) 알리미
+**Timestamp**: 2026-08-19T21:00:00Z
+**User Input**: "Using AI-DLC 역프(한국 가격대가 해외거래소보다 쌀떄) 가 -2%보다 아래로 내려갈 경우 무조건 매수시점인데 시점알리미 기능도 추가하면 좋을꺼같아."
+**AI Response**: 데이터 가용성(업비트 KRW 마켓, KRW-USDT 환율) 확인 후 현재 프리미엄 계산 및 과거 빈도·성적 측정 선행.
+**Context**: Requirements Analysis.
+
+---
+## Follow-up Request (2026-08-19): 역프 판정을 BTC 기준으로
+**Timestamp**: 2026-08-19T21:40:00Z
+**User Input**: "Using AI-DLC btc 기준으로만 판단하면되 비트코인 기준으로 등락폭이 정해지니까."
+**AI Response**: BTC 단독 기준으로 재측정. **선행 측정에서 BTC는 2.2년간 -2% 이하가 0건**(최저 -1.37%)이었으므로 문턱 재검토가 필요하다.
+**Context**: Requirements Analysis.
+
+---
+## Diagnostic (2026-08-19): 역프 측정 방법론 재검토 (사용자 이의)
+**Timestamp**: 2026-08-19T22:00:00Z
+**User Input**: "Using AI-DLC 역프 -3%도 존재했는데 제대로 살펴본거 맞아? 난 이미 겪었어 그 과정을 전체다 데이터 훓어본거 맞냐고"
+**AI Response**: 사용자 이의 타당. 선행 측정의 한계 3가지 확인 -- (1) 기간이 2.2년뿐(업비트 KRW-USDT 상장 2024-06 이후), (2) 4시간봉 **종가**만 비교해 분 단위 역프 누락, (3) 환율을 KRW-USDT로 썼는데 통상 김프는 **USD/KRW 실환율** 기준이라 값이 다르다. 세 축 모두 재측정.
+**Context**: 진단 재실행.
+
+---
+## Requirements 확정 (2026-08-19): 역프 알리미 (매수 신호 아님)
+**Timestamp**: 2026-08-19T22:30:00Z
+**User Input**: "알리미만 추가"
+**AI Response**: 역프 -2% 이하를 **시장 이벤트 알림**으로만 추가. 매수 신호로 표기하지 않고, 실측 통계(이후 24시간 상승확률 36%, 기저 52%)를 함께 표기.
+**Context**: Requirements Analysis -> Code Generation.
+
+---
+## Code Generation (2026-08-19): BR35 역프 알림
+**Timestamp**: 2026-08-19T23:00:00Z
+**AI Response**: 역프 -2% 이하 **시장 이벤트 알림**으로 구현. 매수 신호로 표기하지 않고 실측 통계를 문구에 포함.
+**선행 측정 오류 정정(중대)**: 최초 측정은 (1) 환율을 업비트 KRW-USDT로 썼고 (2) 그 상장일(2024-06)에 맞춰 기간을 2.2년으로 잘랐다. **USD/KRW 실환율 기준 8.9년으로 다시 재니 -2% 사건이 0건 -> 713건, -3%가 0건 -> 211건, 최저가 -1.37% -> -7.49%로 바뀌었다.** 업비트 KRW-BTC에는 8.9년치가 있었는데 환율 소스 때문에 데이터를 버린 것이다. **사용자가 "역프 -3%를 겪었다"고 지적해 발견했다 -- 지적이 정확했다.**
+**충분한 표본으로 재검증한 결론**: 역프 -2%(106건)·-3%(37건)는 **기저보다 나쁘다**(이후 24시간 상승확률 36~38% vs 기저 52%). 시기별 재현성도 없다(2018 -4.08% vs 2021 +4.20%). 따라서 매수 신호로 만들지 않고 사실만 알린다.
+**구현**: `src/premium.py` 신규(USD/KRW 실환율 기준 계산), `src/data_store.py`(app_state 키-값 테이블), `src/pipeline.py`(상태 전환 시에만 보고), `src/notifier.py`(이벤트 블록). 조회 실패 시 계산하지 않고 파이프라인은 정상 진행.
+**Live 확인**: 현재 프리미엄 -0.95%(문턱 -2% 미달) -> 알림 없음.
+**Files Modified**: `src/premium.py`(신규), `src/data_store.py`, `src/pipeline.py`, `src/notifier.py`, `tests/test_premium.py`(신규 10건). 247/247 통과.
+**Context**: Code Generation.
+
+---

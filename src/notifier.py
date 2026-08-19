@@ -6,6 +6,7 @@ import requests
 from src.backtest import STOP_LOSS, TARGET_RETURN
 from src.data_store import ENTRY_TOUCHED, STOP_HIT, TARGET_HIT
 from src.market_phase import BULL, NOT_BULL, STRONG_BULL, WEAK_BULL
+from src.premium import MEASURED_NOTE, REVERSE_PREMIUM_THRESHOLD
 from src.tracks import TRACK_BY_KEY, TRACKS
 
 logger = logging.getLogger(__name__)
@@ -144,7 +145,22 @@ def _track_section(spec, recommendations: list) -> list[str]:
     return [header] + [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
 
 
-def _format_message(run_time: datetime, recommendations: list, phase=None, tracks=None, now=None) -> str:
+def _premium_lines(premium) -> list[str]:
+    """BR35: 역프 알림. **매수 신호가 아니다** -- 실측은 오히려 반대를 가리키므로 그 통계를
+    함께 적어 잘못된 확신을 주지 않는다."""
+    if premium is None:
+        return []
+    return [
+        f"[시장 이벤트] BTC 역프 {premium.value:.2%} (기준 {REVERSE_PREMIUM_THRESHOLD:.0%} 이하)",
+        f"· 업비트 {premium.upbit_krw:,.0f}원 / 바이낸스 {premium.binance_usdt:,.6g} USDT"
+        f" (환율 {premium.usd_krw:,.2f})",
+        f"· {MEASURED_NOTE}",
+    ]
+
+
+def _format_message(
+    run_time: datetime, recommendations: list, phase=None, tracks=None, now=None, premium=None
+) -> str:
     """BR5/BR23/BR25: 상단에 총 개수와 시장 국면, 그 아래 트랙별 섹션.
 
     트랙을 별도 발송하지 않는 이유: 시간당 알림이 다섯 배가 되고, 어느 트랙이 왜 0건인지
@@ -157,6 +173,10 @@ def _format_message(run_time: datetime, recommendations: list, phase=None, track
     phase_block = _phase_lines(phase)
     if phase_block:
         parts.append("\n".join(phase_block))
+
+    premium_block = _premium_lines(premium)
+    if premium_block:
+        parts.append("\n".join(premium_block))
 
     for spec in TRACKS:
         parts.extend(_track_section(spec, tracks.get(spec.key, [])))
@@ -175,11 +195,12 @@ def send_notification(
     phase=None,
     tracks=None,
     now=None,
+    premium=None,
 ) -> None:
     """BR4: sends to every configured channel independently; a failure on one channel does not
     prevent the others from being attempted. Caller (Pipeline) treats this as best-effort (BR3)."""
     _dispatch(
-        _format_message(run_time, recommendations, phase, tracks, now),
+        _format_message(run_time, recommendations, phase, tracks, now, premium),
         telegram_bot_token,
         telegram_chat_id,
         discord_webhook_url,

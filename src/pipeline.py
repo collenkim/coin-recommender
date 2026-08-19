@@ -10,6 +10,7 @@ from src.data_store import TIMEFRAME_HOURS, DataStore
 from src.market_selector import BinanceMarketSelector
 from src.monitor import check_price_events
 from src.notifier import send_notification, send_price_alert
+from src.premium import fetch_btc_premium, is_reverse
 from src.scorer import (
     PHASE_MARKETS,
     REGIME_TIMEFRAME,
@@ -24,6 +25,8 @@ from src.tracks import COLLECTED_TIMEFRAMES, TRACKS
 _EVALUATION_WINDOW_HOURS = 24
 # BR31: 중복 알림 억제 조회 범위. 가장 긴 트랙 보유(7일)보다 넉넉해야 같은 진입봉이 다시 알려지지 않는다.
 _ANNOUNCE_MEMORY_DAYS = 10
+# BR35: 역프 상태를 기억하는 키. 조건이 유지되는 동안 반복 알리지 않고 **진입할 때 한 번**만 알린다.
+_REVERSE_PREMIUM_STATE = "reverse_premium_active"
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +141,18 @@ def _collect_and_store_binance(
             logger.warning("Failed to collect Binance %s %s; skipping this market/timeframe this run", symbol, timeframe, exc_info=True)
 
 
+def _reverse_premium_to_report(data_store: DataStore, now: datetime):
+    """BR35: 역프가 **새로 시작됐을 때만** 돌려준다. 조건이 유지되는 동안에는 None.
+
+    30분마다 도는데 역프는 몇 시간씩 이어질 수 있어, 상태 전환으로 걸지 않으면 같은 이벤트를
+    수십 번 알리게 된다."""
+    premium = fetch_btc_premium()
+    active = is_reverse(premium)
+    was_active = data_store.get_state(_REVERSE_PREMIUM_STATE) == "1"
+    data_store.set_state(_REVERSE_PREMIUM_STATE, "1" if active else "0", now)
+    return premium if (active and not was_active) else None
+
+
 def _drop_already_announced(recommendations: list, announced: set) -> list:
     """이미 알린 (종목, 트랙, 진입봉) 조합을 제거한다."""
     result = []
@@ -231,6 +246,7 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
 
         regime = check_market_regime(store)
         phase = check_market_phase(store)
+        premium = _reverse_premium_to_report(store, now)
         recommendations = generate_recommendations(candidates, store)[: settings.recommendations_per_exchange]
         tracks = generate_all_tracks(track_candidates, store, phase, settings.recommendations_per_exchange)
 
@@ -255,6 +271,7 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
                 phase=phase,
                 tracks=fresh_tracks,
                 now=now,
+                premium=premium,
             )
         except Exception:
             logger.warning("Notification step failed; pipeline run is still considered successful", exc_info=True)

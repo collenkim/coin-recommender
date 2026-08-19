@@ -138,6 +138,16 @@ CREATE TABLE IF NOT EXISTS collection_state (
 );
 """
 
+# BR35: 소량의 운영 상태를 담는 키-값 저장소. 역프 알림을 **상태 전환 시에만** 보내려면
+# 직전 상태를 기억해야 한다 -- 30분마다 도는데 조건이 유지되는 동안 매번 보내면 알림이 쌓인다.
+_APP_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
 _RUNS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     run_time TEXT PRIMARY KEY,
@@ -274,6 +284,7 @@ class DataStore:
             for table in _TABLE_BY_SOURCE.values():
                 conn.execute(_SCHEMA.format(table=table))
             conn.execute(_COLLECTION_STATE_SCHEMA)
+            conn.execute(_APP_STATE_SCHEMA)
             conn.execute(_RUNS_SCHEMA)
             conn.execute(_RECOMMENDATIONS_SCHEMA)
             for column, col_type in _RECOMMENDATIONS_OUTCOME_COLUMNS:
@@ -300,6 +311,19 @@ class DataStore:
         )
         conn.execute("DROP TABLE recommendations")
         conn.execute("ALTER TABLE recommendations_new RENAME TO recommendations")
+
+    def get_state(self, key: str) -> str | None:
+        """BR35: 운영 상태 조회. 없으면 None."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+        return None if row is None else row[0]
+
+    def set_state(self, key: str, value: str, updated_at: datetime) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_state (key, value, updated_at) VALUES (?, ?, ?)",
+                (key, value, updated_at.isoformat()),
+            )
 
     def get_exchange_earliest(self, source: Source, market: str, timeframe: str) -> datetime | None:
         """BR28: 캐시된 '거래소 최초봉' 시각. 없으면 None (조회해서 채워야 함)."""
