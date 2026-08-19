@@ -204,7 +204,10 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
     try:
         store = data_store or DataStore(settings.db_path)
         binance_client = BinanceClient(timeout_seconds=settings.http_timeout_seconds, max_retries=settings.http_max_retries)
-        binance_market_selector = BinanceMarketSelector(binance_client, top_n=settings.top_n_candidates)
+        # BR33: 상장일 캐시를 쓰도록 store를 넘긴다 -- 안 넘기면 매 실행 후보마다 1요청이 더 나간다.
+        binance_market_selector = BinanceMarketSelector(
+            binance_client, top_n=settings.top_n_candidates, data_store=store
+        )
 
         now = datetime.now(timezone.utc)
 

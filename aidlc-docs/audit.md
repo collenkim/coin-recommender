@@ -1771,3 +1771,28 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation.
 
 ---
+## Follow-up Request (2026-08-19): 거래량 측정 기준 확인
+**Timestamp**: 2026-08-19T18:00:00Z
+**User Input**: "Using AI-DLC 거래량 기준은 어떻게 측정하고 있어.  sandk가 거래량 1위인거같은데"
+**AI Response**: 측정 기준 확인 및 상위권 구성 점검.
+**Context**: 진단.
+
+---
+## Code Generation (2026-08-19): 신규 상장 후보 제외 (BR33)
+**Timestamp**: 2026-08-19T18:40:00Z
+**User Input**: "적용해줘."
+**AI Response**: 직전 질문 중 **"상장 6개월 미만 제외"**를 적용. 장기 트랙 3배 청산 여유(3%p) 건은 사용자 결정 사항이라 미적용으로 남김.
+**근거**: 상위 30 슬롯 중 7종(SNDKB/SPCXB/SNXXB/SKHYB/KORUB/SOXLB/MUB)이 상장 0.1~0.2년이라 표본 1~4건으로 추천이 원천 불가한데 슬롯만 차지. 제외 시 LTC/UNI/AAVE/XLM/TAO 등 검증된 종목이 대체.
+**Context**: Code Generation.
+
+---
+## Code Generation (2026-08-19): BR33 신규 상장 제외 완료
+**Timestamp**: 2026-08-19T19:00:00Z
+**AI Response**: 상장 180일 미만 제외 적용.
+**거래량 기준 확인**: `quoteVolume`(24시간 거래대금, USDT 환산). 코인 개수가 아닌 금액 기준. 후보는 `endswith("USDT")`로 **USDT 페어 한정**(사용자 질문 확인 완료).
+**적용 결과**: 제외 7종(SNDKB/SPCXB/SNXXB/SKHYB/KORUB/SOXLB/MUB) -> 신규 포함 AAVE/UNI/XLM/LTC/TAO/RED/USDE/HEMI. 최소 상장 경과 0.1년 -> 0.8년. 상장일은 `collection_state` 캐시 재사용(1d 키)으로 실측 1초.
+**레버리지 3배 산수 보고(코드 변경 없음)**: 수수료 왕복 0.1%·펀딩 0.01%/8h 반영 시 순기대 단타 **+0.06%** / 중기 +0.48% / 장기 +1.88%. **단타는 수수료가 대부분을 먹는다.** 청산선(-33%) 초과 눌림은 단타 1/945건, 중기 4/918건, **장기 28/556건(5.0%)** -- 장기 손절 -10%는 3배에서 -30%로 청산선에 3%p까지 접근한다. **사용자 결정 사항이라 미적용.**
+**Files Modified**: `src/market_selector.py`(MIN_LISTING_DAYS, 상장일 캐시 조회), `src/pipeline.py`(store 주입), `tests/test_market_selector.py`(4건 추가). 236/236 통과.
+**Context**: Code Generation.
+
+---
