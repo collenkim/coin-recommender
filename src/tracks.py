@@ -19,7 +19,9 @@ BR24(반감기 사이클 90일 트랙)를 대체한다. 반감기 여부와 무�
 확률은 낮아 수집 대상에서 뺐다(23GB를 쓰고 이득이 창마다 부호가 갈렸다).
 """
 
+from bisect import bisect_right
 from dataclasses import dataclass
+from datetime import datetime
 
 from src.data_store import Candle, close_time
 from src.features import IchimokuPoint
@@ -39,18 +41,41 @@ class TrackSpec:
     hold_hours: int
     timeframe: str  # 진입 판정에 쓰는 봉
     min_samples: int = 10
+    # 개방 국면을 트랙별로 제한할 때 쓴다. None이면 게이트가 연 국면 전부에서 동작한다.
+    only_phases: tuple[str, ...] | None = None
 
 
 # 목표·보유는 사용자 지정. 진입 타임프레임과 손절은 실측으로 정했다.
 # 장기는 최초 요청(48시간 +15%)이 실측 9%로 성립하지 않아 "목표 하향 + 보유 연장" 지시에 따라
 # +10%/-7%/7일로 재설정했다(실측 도달률 32%, 기대수익 +0.2%).
 TRACKS = (
-    TrackSpec(ULTRA, "초단기", 0.02, 0.02, 8, "4h"),
+    # 초단기는 **약상승장에서만** 연다. 보조지표를 다 걸어도 국면별 기대수익이
+    # 강세장 -0.05% / 상승장 -0.10% / 상승장 아님 -0.19%로 음수인데 **약상승장만 +0.05%**다
+    # (표본 134로 얇다 -- 근거가 강하지 않다는 점을 문구에 남긴다).
+    TrackSpec(ULTRA, "초단기", 0.02, 0.02, 8, "4h", only_phases=("weak_bull",)),
     TrackSpec(SHORT, "단기", 0.03, 0.02, 12, "4h"),
     TrackSpec(MID, "중기", 0.05, 0.03, 24, "1h"),
     TrackSpec(LONG, "장기", 0.10, 0.07, 168, "4h"),
 )
 TRACK_BY_KEY = {t.key: t for t in TRACKS}
+
+# BR26: 적중률 하한. 기존 레짐 트랙의 45%는 실측 능력(36.3%)보다 높아 "표본에서 우연히 높게
+# 나온 코인"만 통과시켰다(워크포워드 실측: 표시 45% vs 실제 38.9%). 사용자 지시로 25~30%대에
+# 맞춘다. 트랙 실측 도달률이 24~36%이므로 25%로 둔다.
+MIN_HIT_RATE = 0.25
+
+# BR26 보조지표: **BTC 4시간봉이 구름 위 + 해당 종목 RSI >= 50**.
+#
+# 최초 측정에서 "일봉도 구름 위"가 가장 효과적으로 보였으나(장기 +0.20% -> +0.72%) **룩어헤드였다**
+# -- 아직 마감되지 않은 당일 일봉의 종가로 그날 진입을 판정했다. 마감 시각 기준으로 다시 재면
+# 일봉 조건은 전 트랙에서 **해롭다**(초단기 -0.23% / 단기 -0.13% / 중기 -0.01% / 장기 +0.04%).
+# 그래서 일봉 조건은 넣지 않는다.
+#
+# 마감 시각 기준 실측 기대수익 (조건 없음 -> RSI>=50 + BTC구름위):
+#   초단기 -0.15% -> -0.05% / 단기 -0.06% -> +0.04% / 중기 +0.01% -> +0.07% / 장기 +0.20% -> +0.40%
+# ADX>25는 오히려 해로웠고(초단기 -0.05%p), 기준선 상승·양운도 중립~음수여서 넣지 않는다.
+# RSI 문턱은 사용자 지정 50이다(실측상 55가 근소 우위지만 지정값을 따른다).
+RSI_MIN = 50.0
 
 # 수집 대상 타임프레임. 1m/3m/5m은 제외한다 -- 20종 9년 기준 23GB를 쓰는데 초단기 기여가
 # 창마다 부호가 갈렸다(90일 창 +2.5%p, 365일 창 -4.5%p). 1m은 BR22 가격 감시가 저장 없이
@@ -82,6 +107,40 @@ TIMEFRAME_HOURS = {
 def bars_for(spec: TrackSpec) -> int:
     """보유 기간을 해당 타임프레임의 봉 수로 환산."""
     return max(1, round(spec.hold_hours / TIMEFRAME_HOURS[spec.timeframe]))
+
+
+@dataclass(frozen=True)
+class EntryContext:
+    """BR26 보조지표 조회용. 시계열은 (시각, 값)의 오름차순 목록이며 이진탐색으로 조회한다 --
+    선형 탐색을 진입 후보마다 돌리면 종목당 수만 봉 × 수천 진입이 되어 실행 시간이 폭증한다."""
+
+    btc_cloud: list[tuple[datetime, bool]]
+    rsi: list[float | None]
+
+
+def _as_of(series: list[tuple[datetime, bool]], moment: datetime) -> bool:
+    """`moment` 이전에 마감된 가장 최근 값. 이력보다 이르면 False -- 모르면 진입하지 않는다."""
+    if not series:
+        return False
+    index = bisect_right([t for t, _ in series], moment) - 1
+    return series[index][1] if index >= 0 else False
+
+
+def aux_ok(context: EntryContext | None, candles: list[Candle], i: int) -> bool:
+    """BR26: BTC 4시간봉이 구름 위 + 해당 종목 RSI >= 50.
+
+    조회는 반드시 **마감 시각** 기준이다 -- 시가 시각으로 조회하면 아직 마감되지 않은 봉의 종가를
+    쓰게 되어 룩어헤드가 된다. 최초 구현에서 실제로 이 실수를 했고 보조지표 효과가 3~4배로
+    부풀어 보였다.
+
+    context가 없으면 통과시킨다 -- 보조지표를 계산할 수 없는 호출(테스트 등)에서 조건이 조용히
+    막히는 것보다 명시적으로 꺼진 편이 낫다."""
+    if context is None:
+        return True
+    if not _as_of(context.btc_cloud, close_time(candles[i])):
+        return False
+    value = context.rsi[i] if i < len(context.rsi) else None
+    return value is not None and value >= RSI_MIN
 
 
 def cloud_breakout(points: list[IchimokuPoint], i: int) -> bool:
@@ -120,7 +179,9 @@ def simulate(candles: list[Candle], i: int, spec: TrackSpec) -> tuple[str, float
     return "timeout", candles[last].close / entry - 1, last
 
 
-def compute_track_stats(candles: list[Candle], points: list[IchimokuPoint], spec: TrackSpec):
+def compute_track_stats(
+    candles: list[Candle], points: list[IchimokuPoint], spec: TrackSpec, context: EntryContext | None = None
+):
     """해당 코인 이력에서 같은 조건으로 진입했던 과거 시점의 성적.
 
     보유 중에는 새 진입을 잡지 않는다(겹침 제거) -- 겹치는 진입을 각각 세면 같은 구간이 여러 번
@@ -131,6 +192,8 @@ def compute_track_stats(candles: list[Candle], points: list[IchimokuPoint], spec
     last_exit = -1
     for i in range(len(points)):
         if i <= last_exit or not cloud_breakout(points, i):
+            continue
+        if not aux_ok(context, candles, i):
             continue
         simulated = simulate(candles, i, spec)
         if simulated is None:
@@ -155,12 +218,16 @@ def compute_track_stats(candles: list[Candle], points: list[IchimokuPoint], spec
     }
 
 
-def latest_entry(candles: list[Candle], points: list[IchimokuPoint]) -> int | None:
-    """가장 최근 마감봉이 돌파 봉이면 그 인덱스."""
+def latest_entry(
+    candles: list[Candle], points: list[IchimokuPoint], context: EntryContext | None = None
+) -> int | None:
+    """가장 최근 마감봉이 돌파 봉이고 보조지표까지 통과하면 그 인덱스."""
     if not points:
         return None
     i = len(points) - 1
-    return i if cloud_breakout(points, i) else None
+    if not cloud_breakout(points, i) or not aux_ok(context, candles, i):
+        return None
+    return i
 
 
 def entry_time_of(candles: list[Candle], i: int):

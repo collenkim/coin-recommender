@@ -6,6 +6,10 @@ from src.data_store import TIMEFRAME_HOURS, Candle
 from src.features import compute_ichimoku
 from src.tracks import (
     COLLECTED_TIMEFRAMES,
+    MIN_HIT_RATE,
+    RSI_MIN,
+    EntryContext,
+    aux_ok,
     LONG,
     MID,
     SHORT,
@@ -182,3 +186,77 @@ def test_stats_count_breakouts_without_overlapping_holds():
     stats = compute_track_stats(candles, compute_ichimoku(candles), spec)
     assert stats["n"] <= 10  # 돌파 횟수를 넘지 않는다
     assert stats["n"] == stats["hit_count"] + stats["loss_count"] + stats["timeout_count"]
+
+
+# --- BR26 보조지표 / 문턱 ---
+
+def _ctx(btc=True, rsi_value=60.0, n=200):
+    from datetime import datetime as _dt
+
+    base = _dt(2020, 1, 1, tzinfo=UTC)
+    return EntryContext(btc_cloud=[(base, btc)], rsi=[rsi_value] * n)
+
+
+def test_aux_requires_btc_above_cloud():
+    candles = _candles([100.0] * 50)
+    assert not aux_ok(_ctx(btc=False), candles, 40)
+
+
+def test_aux_does_not_use_the_daily_cloud():
+    """일봉 구름 조건은 룩어헤드로 좋아 보였을 뿐, 마감 기준으로 재면 전 트랙에서 해로웠다
+    (초단기 -0.23% / 단기 -0.13%). EntryContext에 남아 있으면 다시 들어가기 쉽다."""
+    assert not hasattr(EntryContext, "daily_cloud")
+    assert "daily_cloud" not in EntryContext.__dataclass_fields__
+
+
+def test_aux_requires_rsi_at_or_above_the_floor():
+    candles = _candles([100.0] * 50)
+    assert not aux_ok(_ctx(rsi_value=RSI_MIN - 0.1), candles, 40)
+    assert aux_ok(_ctx(rsi_value=RSI_MIN), candles, 40)
+
+
+def test_aux_rejects_when_rsi_is_unknown():
+    candles = _candles([100.0] * 50)
+    context = EntryContext(btc_cloud=_ctx().btc_cloud, rsi=[None] * 200)
+    assert not aux_ok(context, candles, 40)
+
+
+def test_aux_defaults_to_false_before_any_history():
+    """조회 시점이 시계열보다 이르면 False -- 모르는 상태로 진입하지 않는다."""
+    from datetime import datetime as _dt
+
+    candles = _candles([100.0] * 50)
+    late = EntryContext(btc_cloud=[(_dt(2099, 1, 1, tzinfo=UTC), True)], rsi=[60.0] * 200)
+    assert not aux_ok(late, candles, 40)
+
+
+def test_aux_passes_through_when_no_context_given():
+    candles = _candles([100.0] * 50)
+    assert aux_ok(None, candles, 40)
+
+
+def test_hit_rate_floor_sits_below_measured_capability():
+    """45%는 실측 능력(36.3%)보다 높아 우연히 높게 나온 코인만 통과시켰다."""
+    assert 0.25 <= MIN_HIT_RATE <= 0.30
+
+
+def test_ultra_track_only_opens_in_weak_bull():
+    """보조지표를 다 걸어도 국면별 기대수익이 약상승장(+0.05%)만 양수였다."""
+    assert TRACK_BY_KEY[ULTRA].only_phases == ("weak_bull",)
+    for key in (SHORT, MID, LONG):
+        assert TRACK_BY_KEY[key].only_phases is None
+
+
+def test_stats_apply_the_aux_filter():
+    """보조지표가 걸리면 같은 이력에서 표본이 줄어야 한다."""
+    prices = [100.0] * 120
+    for _ in range(6):
+        prices += [200.0, 100.0]
+    prices += [100.0] * 60
+    candles = _candles(prices)
+    points = compute_ichimoku(candles)
+    spec = TRACK_BY_KEY[ULTRA]
+    without = compute_track_stats(candles, points, spec)
+    blocked = compute_track_stats(candles, points, spec, _ctx(btc=False, n=len(candles)))
+    assert blocked["n"] == 0
+    assert without["n"] > 0

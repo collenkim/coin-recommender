@@ -65,6 +65,26 @@ def compute_ichimoku(candles: list[Candle], tenkan: int = 9, kijun: int = 26, se
     ]
 
 
+def compute_rsi(candles: list[Candle], length: int = 14) -> list[float | None]:
+    """BR26: 각 봉의 RSI(14). 워밍업 구간은 None.
+
+    보조지표 중 RSI를 채택한 이유는 실측이다 -- ADX는 오히려 기대수익을 낮췄고(초단기 -0.05%p),
+    기준선 상승·양운도 중립~음수였다."""
+    if not candles:
+        return []
+    values = ta.rsi(pd.Series([c.close for c in candles]), length=length)
+    if values is None:
+        return [None] * len(candles)
+    return [_nan_to_none(v) for v in values.tolist()]
+
+
+def above_cloud(point: IchimokuPoint) -> bool:
+    """종가가 구름 위인가. 워밍업 구간은 False."""
+    if point.senkou_a is None or point.senkou_b is None:
+        return False
+    return point.close > max(point.senkou_a, point.senkou_b)
+
+
 def is_bullish(point: IchimokuPoint) -> bool:
     """BR2: above cloud AND bullish (span A > span B). False during warmup (None values)."""
     if point.senkou_a is None or point.senkou_b is None:

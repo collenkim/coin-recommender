@@ -10,9 +10,17 @@ from src.backtest import (
     wilson_lower,
 )
 from src.data_store import DataStore, close_time
-from src.features import compute_ichimoku
+from src.features import above_cloud, compute_ichimoku, compute_rsi
 from src.market_phase import OPEN_PHASES, MarketPhase, current_phase
-from src.tracks import TRACKS, TrackSpec, compute_track_stats, latest_entry
+from src.tracks import (
+    MIN_HIT_RATE as TRACK_MIN_HIT_RATE,
+    TRACKS,
+    EntryContext,
+    TrackSpec,
+    cloud_breakout,
+    compute_track_stats,
+    latest_entry,
+)
 
 SOURCE = "binance"
 BTC_MARKET = "BTCUSDT"
@@ -101,24 +109,61 @@ def generate_recommendations(candidates: list[str], data_store: DataStore) -> li
     return sorted(recommendations, key=lambda r: r.hit_rate_lower, reverse=True)
 
 
+def _btc_cloud_series(data_store: DataStore) -> list[tuple[datetime, bool]]:
+    """BR26: BTC 4시간봉 구름 위 여부 시계열. 봉 시각이 아니라 **마감 시각**에 붙인다 --
+    시가 시각을 쓰면 아직 모르는 종가로 판정하는 룩어헤드가 된다(BR20에서 겪은 것과 같은 함정)."""
+    candles = data_store.get_candles(SOURCE, BTC_MARKET, REGIME_TIMEFRAME)
+    return [(close_time(c), above_cloud(p)) for c, p in zip(candles, compute_ichimoku(candles))]
+
+
+def _entry_context(data_store: DataStore, market: str, candles: list, btc_cloud) -> EntryContext:
+    return EntryContext(btc_cloud=btc_cloud, rsi=compute_rsi(candles))
+
+
+def _candles_and_points(data_store: DataStore, market: str, timeframe: str, cache: dict | None):
+    """일목 계산은 봉 수에 비례해 비싸다. 4시간봉 트랙이 3개(초단기·단기·장기)라 캐시가 없으면
+    같은 종목의 같은 봉을 세 번 계산한다."""
+    key = (market, timeframe)
+    if cache is not None and key in cache:
+        return cache[key]
+    candles = data_store.get_candles(SOURCE, market, timeframe)
+    value = (candles, compute_ichimoku(candles))
+    if cache is not None:
+        cache[key] = value
+    return value
+
+
 def generate_track_recommendations(
-    candidates: list[str], data_store: DataStore, spec: TrackSpec
+    candidates: list[str],
+    data_store: DataStore,
+    spec: TrackSpec,
+    btc_cloud=None,
+    candle_cache=None,
 ) -> list[Recommendation]:
     """BR25: 한 트랙의 추천. 진입 타임프레임의 가장 최근 마감봉이 구름대 돌파면 후보가 되고,
     같은 조건의 과거 성적이 표본 하한을 넘으면 추천이 된다.
 
-    적중률 문턱을 두지 않는다 -- 단기 트랙 워크포워드에서 실측된 선택 편향(표시 45% vs 실제 38.9%)을
-    반복하지 않기 위해서다. 정렬만 Wilson 하한으로 한다."""
+    BR26: 적중률 하한 25%를 둔다. 기존 45%는 실측 능력(36.3%)보다 높아 우연히 높게 나온 코인만
+    통과시켰다 -- 25%는 트랙 실측 도달률(24~36%) 아래이므로 같은 편향을 만들지 않는다.
+    정렬은 Wilson 하한으로 한다."""
+    if btc_cloud is None:
+        btc_cloud = _btc_cloud_series(data_store)
     recommendations = []
     for market in candidates:
-        candles = data_store.get_candles(SOURCE, market, spec.timeframe)
-        points = compute_ichimoku(candles)
-        index = latest_entry(candles, points)
+        candles, points = _candles_and_points(data_store, market, spec.timeframe, candle_cache)
+        if not points or not cloud_breakout(points, len(points) - 1):
+            # 최신봉이 돌파가 아니면 RSI·일봉 시계열을 만들 이유가 없다. 대부분의 종목이 여기서
+            # 걸러지므로 이 순서가 실행 시간을 좌우한다(실측 184초 -> 수 초).
+            continue
+        context = _entry_context(data_store, market, candles, btc_cloud)
+        index = latest_entry(candles, points, context)
         if index is None:
             continue
 
-        stats = compute_track_stats(candles, points, spec)
+        stats = compute_track_stats(candles, points, spec, context)
         if stats["n"] < spec.min_samples or stats["hit_rate"] is None:
+            continue
+        if stats["hit_rate"] < TRACK_MIN_HIT_RATE:
             continue
 
         entry_candle = candles[index]
@@ -148,4 +193,15 @@ def generate_all_tracks(
     구간은 0 또는 음수였다."""
     if phase is None or phase.phase not in OPEN_PHASES:
         return {spec.key: [] for spec in TRACKS}
-    return {spec.key: generate_track_recommendations(candidates, data_store, spec)[:limit] for spec in TRACKS}
+    btc_cloud = _btc_cloud_series(data_store)
+    candle_cache: dict = {}
+    result = {}
+    for spec in TRACKS:
+        # 트랙별 개방 국면 제한(BR26). 초단기는 약상승장에서만 기대수익이 양수였다.
+        if spec.only_phases is not None and phase.phase not in spec.only_phases:
+            result[spec.key] = []
+            continue
+        result[spec.key] = generate_track_recommendations(
+            candidates, data_store, spec, btc_cloud, candle_cache
+        )[:limit]
+    return result
