@@ -53,7 +53,7 @@ def test_three_tracks_cover_the_requested_horizons():
     assert [(t.target, t.stop, t.hold_hours) for t in TRACKS] == [
         (0.02, 0.02, 8),
         (0.05, 0.04, 24),
-        (0.10, 0.10, 48),
+        (0.10, 0.05, 48),
     ]
 
 
@@ -306,3 +306,11 @@ def test_hit_rate_floors_sit_below_each_track_measured_rate():
 def test_floors_descend_with_target_size():
     floors = [spec.min_hit_rate for spec in TRACKS]
     assert floors == sorted(floors, reverse=True)
+
+
+def test_long_stop_is_tight_enough_for_3x_leverage():
+    """BR34: 손절 -10%는 3배에서 -30%로 청산선(-33%)까지 3%p뿐이었다.
+    -5%면 -15%로 여유가 18%p가 된다. 기대수익은 -0.07%p만 내준다."""
+    long_spec = TRACK_BY_KEY[LONG]
+    assert long_spec.stop <= 0.05
+    assert long_spec.stop * 3 < 0.33 - 0.15  # 3배 청산선까지 최소 15%p 여유

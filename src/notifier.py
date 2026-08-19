@@ -45,7 +45,7 @@ def _entry_guide_lines(r) -> list[str]:
     return [
         f"· 진입가: {entry_price:,.6g}  ({_kst(entry_time)} KST 봉 마감 기준)",
         f"· 매도가: {entry_price * (1 + target):,.6g}  (+{target:.0%})",
-        f"· 손절가: {entry_price * (1 - stop):,.6g}  (-{stop:.0%})",
+        f"· 손절가: {entry_price * (1 - stop):,.6g}  (-{stop:.0%}, 아래 확률의 전제)",
         f"· 청산 기한: {_kst(deadline)} KST  ({horizon})",
     ]
 
@@ -133,6 +133,8 @@ def _regime_section(recommendations: list) -> list[str]:
 def _track_section(spec, recommendations: list) -> list[str]:
     """BR25: 트랙 하나 = 섹션 하나. 0건이어도 제목을 남겨 어느 트랙이 왜 비었는지 드러낸다."""
     signal = f"{spec.timeframe} 골든크로스" + (" + 구름 위" if spec.require_above_cloud else "")
+    # BR34: 손절 집행은 사용자 몫이다. 다만 발표하는 확률은 **표시된 손절을 전제로** 계산된
+    # 값이므로, 다른 손절을 쓰면 그 확률은 더 이상 맞지 않는다는 점을 함께 적는다.
     header = (
         f"[{spec.label}] {_hours_text(spec.hold_hours)} 내 +{spec.target:.0%} 목표"
         f" (손절 -{spec.stop:.0%}, {signal}) · {len(recommendations)}개"
