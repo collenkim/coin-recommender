@@ -3,11 +3,12 @@
 
 # --- Unit 1: data-pipeline ---
 db_path: "data/coin_recommender.db"
-top_n_candidates: 20
-# 장기 트랙(BR24) 후보 수. 상위 10이 아니라 15인 이유: 신규 상장이 거래량을 끌어올려
-# 상위 10에 이력 1,600봉짜리 종목이 들어오고 검증된 TRX/DOGE/LINK가 밀려난다.
-# 안전은 상위 N이 아니라 표본 하한(LONG_MIN_SAMPLES)이 담당한다.
-long_top_n_candidates: 15
+top_n_candidates: 30
+# BR25 4트랙 후보 수. 2026-08-19 사용자 지시로 30종으로 확대(이전 15종).
+# 상위 N을 좁히는 것은 안전 장치가 아니다 -- 신규 상장이 거래량을 끌어올려 상위권에 이력
+# 1,600봉짜리 종목이 들어오기 때문이다. 안전은 표본 하한(tracks.MIN_HIT_RATE와 min_samples)이
+# 담당하며, 후보를 넓히면 검증된 종목이 더 많이 포함된다.
+long_top_n_candidates: 30
 recommendations_per_exchange: 5  # 거래소(업비트/바이낸스)별 최종 추천 개수 상한
 bootstrap_min_candles: 100
 # 16년(5840일). 바이낸스 BTCUSDT 최초봉이 2017-08-17이라 실제로는 가용 최대(약 9년)까지 받고,

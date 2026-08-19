@@ -1640,3 +1640,18 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation.
 
 ---
+## Code Generation (2026-08-19): 후보 30종 + 30분봉 상한 해제
+**Timestamp**: 2026-08-19T11:30:00Z
+**User Input**: "Using AI-DLC 해당 수정내용 커밋해줘. 추천 스캐줄에 모든 내용이 다 포함되는거 맞지?  종목은 거래량 상위 30개로 늘려줘. 10개에서" / "Using AI-DLC 데이터는 16년치 보관하는거 맞지?"
+**AI Response**:
+1. **커밋 확인** -- 직전 BR27 작업은 이미 `51369e6`으로 커밋 완료(working tree 깨끗)였음.
+2. **스케줄 포함 범위 확인** -- `scheduler`가 매시 5분에 `run_recommendation_pipeline`을 호출하고, 그 안에 수집(30종×7봉 + BTC/ETH) -> 레짐 판정 -> 국면 판정 -> 4트랙 산출 -> 기존 레짐 트랙 -> 저장 -> 알림 -> 성과 판별이 모두 포함됨. 가격 감시는 5분마다 별도 잡.
+3. **후보 확대** -- `top_n_candidates` 20->30, `long_top_n_candidates` 15->30. **사용자가 "10개에서"라고 했으나 실제 이전 값은 20/15였음**(정정 보고).
+4. **"16년치 보관" 정정** -- 설정 상한일 뿐 실제는 거래소 개장(2017-07) 때문에 **8.8~9.0년**. 15분봉은 의도적 2년 상한, 1분봉은 미저장.
+5. **발견·수정한 문제** -- BR27에서 30분봉이 판정봉이 되면서 3년 상한이 표본을 직접 깎고 있었다. 30종 중 5종(NEAR/LINK/UTK/ADA/FIL)의 30분봉이 4시간봉보다 얕아 표본 불균등. 상한 해제 후 ADA 52,559->146,013봉. `_MAX_PAGES` 150->300(16년치 30분봉 281페이지 필요).
+**효과**: 표본 초단기 1,270->2,144 / 단기 1,264->2,137 / 중기 1,241->2,101 / 장기 652->1,104. 기대수익 초단기 +0.13% / 단기 +0.23% / 중기 +0.28% / 장기 **+1.16%**.
+**비용**: 신규 10종 최초 수집 313초, 30분봉 보강 139초(모두 1회성). 4트랙 산출 16초.
+**Files Modified**: `config/settings.yaml`, `src/config.py`, `src/tracks.py`, `src/binance_client.py`. 222/222 통과.
+**Context**: Code Generation.
+
+---

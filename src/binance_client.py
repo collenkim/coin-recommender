@@ -9,11 +9,12 @@ from src.data_store import Candle, TickerInfo, drop_unclosed
 _BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 _BINANCE_TICKER_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
 _MAX_LIMIT = 1000
-# 폭주 방지 상한. 16년치 1시간봉이 140,160개(141페이지)이므로 그보다 넉넉해야 한다 -- 모자라면
-# 예외 없이 조용히 잘려서, 설정한 lookback보다 짧은 이력으로 백테스트가 돌아간다.
-# 60 -> 130 -> 150으로 두 번 올렸다(2026-08-18, lookback 5년 -> 12년 -> 16년). 설정만 바꾸고
-# 이 값을 두면 조용히 잘린다. lookback을 바꿀 때는 반드시 함께 확인한다.
-_MAX_PAGES = 150
+# 폭주 방지 상한. **가장 짧은 봉 × 그 봉의 lookback**이 기준이다 -- 모자라면 예외 없이 조용히
+# 잘려서, 설정한 lookback보다 짧은 이력으로 백테스트가 돌아간다.
+# 16년치 30분봉이 280,320개(281페이지)로 현재 최대 요구치다(1시간봉은 141페이지).
+# 60 -> 130 -> 150 -> 300으로 올려 왔다. lookback이나 수집 타임프레임을 바꿀 때는 반드시
+# 함께 확인한다 -- `test_pagination_guard_covers_every_collected_timeframe`이 검사한다.
+_MAX_PAGES = 300
 
 T = TypeVar("T")
 
