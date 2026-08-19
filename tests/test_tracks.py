@@ -6,14 +6,13 @@ from src.data_store import TIMEFRAME_HOURS, Candle
 from src.features import above_cloud, compute_ichimoku
 from src.tracks import (
     COLLECTED_TIMEFRAMES,
+    DAY,
     LONG,
     MID,
     MIN_HIT_RATE,
     RSI_MIN,
-    SHORT,
     TRACK_BY_KEY,
     TRACKS,
-    ULTRA,
     EntryContext,
     SimSeries,
     TrackSpec,
@@ -49,13 +48,12 @@ def _candles(prices, timeframe="4h", start=datetime(2025, 1, 1, tzinfo=UTC)):
 # --- 트랙 정의 ---
 
 
-def test_four_tracks_cover_the_requested_horizons():
-    assert [t.key for t in TRACKS] == [ULTRA, SHORT, MID, LONG]
-    assert [(t.target, t.hold_hours) for t in TRACKS] == [
-        (0.02, 8),
-        (0.03, 12),
-        (0.05, 24),
-        (0.10, 168),
+def test_three_tracks_cover_the_requested_horizons():
+    assert [t.key for t in TRACKS] == [DAY, MID, LONG]
+    assert [(t.target, t.stop, t.hold_hours) for t in TRACKS] == [
+        (0.02, 0.02, 8),
+        (0.05, 0.04, 24),
+        (0.10, 0.10, 48),
     ]
 
 
@@ -89,9 +87,9 @@ def test_every_collected_timeframe_is_registered_for_close_time():
 
 
 def test_bars_for_converts_hold_hours_to_the_simulation_timeframe():
-    assert bars_for(TRACK_BY_KEY[ULTRA]) == 16  # 8시간 / 30분봉
+    assert bars_for(TRACK_BY_KEY[DAY]) == 16  # 8시간 / 30분봉
     assert bars_for(TRACK_BY_KEY[MID]) == 48  # 24시간 / 30분봉
-    assert bars_for(TRACK_BY_KEY[LONG]) == 336  # 168시간 / 30분봉
+    assert bars_for(TRACK_BY_KEY[LONG]) == 96  # 48시간 / 30분봉
 
 
 # --- 진입 신호 (골든크로스) ---
@@ -99,7 +97,7 @@ def test_bars_for_converts_hold_hours_to_the_simulation_timeframe():
 
 def test_latest_entry_returns_none_without_a_golden_cross():
     candles = _candles([100.0] * 200)
-    assert latest_entry(candles, compute_ichimoku(candles), TRACK_BY_KEY[ULTRA]) is None
+    assert latest_entry(candles, compute_ichimoku(candles), TRACK_BY_KEY[DAY]) is None
 
 
 # --- 시뮬레이션 ---
@@ -128,14 +126,14 @@ def _sim_after_entry(second_high, second_low, spec):
 
 
 def test_target_hit_is_a_win():
-    spec = TRACK_BY_KEY[ULTRA]
+    spec = TRACK_BY_KEY[DAY]
     result, ret, _ = simulate(_candles([100.0, 100.0]), 0, spec, _sim_after_entry(102.0, 100.0, spec))
     assert result == "win"
     assert ret == pytest.approx(spec.target)
 
 
 def test_stop_hit_is_a_loss():
-    spec = TRACK_BY_KEY[ULTRA]
+    spec = TRACK_BY_KEY[DAY]
     result, ret, _ = simulate(_candles([100.0, 100.0]), 0, spec, _sim_after_entry(100.0, 98.0, spec))
     assert result == "loss"
     assert ret == pytest.approx(-spec.stop)
@@ -143,13 +141,13 @@ def test_stop_hit_is_a_loss():
 
 def test_stop_takes_precedence_within_a_single_bar():
     """한 판정봉에서 둘 다 닿으면 선후를 알 수 없으므로 보수적으로 손절로 본다."""
-    spec = TRACK_BY_KEY[ULTRA]
+    spec = TRACK_BY_KEY[DAY]
     result, _, _ = simulate(_candles([100.0, 100.0]), 0, spec, _sim_after_entry(105.0, 97.0, spec))
     assert result == "loss"
 
 
 def test_timeout_settles_at_the_closing_price():
-    spec = TRACK_BY_KEY[ULTRA]
+    spec = TRACK_BY_KEY[DAY]
     result, ret, _ = simulate(_candles([100.0, 100.0]), 0, spec, _sim_series(spec=spec, flat=100.5))
     assert result == "timeout"
     assert ret == pytest.approx(0.005)
@@ -157,7 +155,7 @@ def test_timeout_settles_at_the_closing_price():
 
 def test_simulate_returns_none_while_the_hold_window_is_still_open():
     """진행 중인 매매를 타임아웃으로 세면 표본이 왜곡된다 -- BR24 구현에서 실제로 겪은 결함."""
-    spec = TRACK_BY_KEY[ULTRA]
+    spec = TRACK_BY_KEY[DAY]
     short = _sim_series(spec=spec, extra=-1)  # 보유 창보다 한 봉 모자람
     assert simulate(_candles([100.0, 100.0]), 0, spec, short) is None
 
@@ -179,7 +177,7 @@ def _flat_sim(entry_candles, spec):
 
 def test_stats_are_empty_when_there_is_no_golden_cross():
     candles = _candles([100.0] * 200)
-    spec = TRACK_BY_KEY[ULTRA]
+    spec = TRACK_BY_KEY[DAY]
     stats = compute_track_stats(candles, compute_ichimoku(candles), spec, _flat_sim(candles, spec))
     assert stats["n"] == 0
     assert stats["hit_rate"] is None
@@ -196,7 +194,7 @@ def test_golden_cross_fires_only_on_the_crossing_bar():
 
 def test_stats_count_entries_without_overlapping_holds():
     """보유 중 새 진입을 잡으면 같은 구간이 여러 번 반영되어 표본이 부푼다."""
-    spec = TRACK_BY_KEY[ULTRA]
+    spec = TRACK_BY_KEY[DAY]
     prices = [100.0] * 120
     for _ in range(10):
         prices += [200.0, 100.0]
@@ -272,7 +270,7 @@ def test_stats_apply_the_aux_filter():
         prices += [100.0 + i for i in range(30)] + [130.0 - i for i in range(30)]
     candles = _candles(prices)
     points = compute_ichimoku(candles)
-    spec = TRACK_BY_KEY[ULTRA]
+    spec = TRACK_BY_KEY[DAY]
     sim = _flat_sim(candles, spec)
     without = compute_track_stats(candles, points, spec, sim)
     blocked = compute_track_stats(candles, points, spec, sim, _ctx(btc=False, n=len(candles)))
@@ -283,7 +281,7 @@ def test_stats_apply_the_aux_filter():
 def test_only_the_long_track_requires_price_above_the_cloud():
     """실측: 장기 +0.56% -> +1.06%로 크게 개선되지만 초단기는 +0.15% -> +0.12%로 손해."""
     assert TRACK_BY_KEY[LONG].require_above_cloud
-    for key in (ULTRA, SHORT, MID):
+    for key in (DAY, MID):
         assert not TRACK_BY_KEY[key].require_above_cloud
 
 
@@ -292,5 +290,19 @@ def test_entry_ok_adds_the_cloud_condition_only_where_configured():
     crossings = [i for i in range(1, len(points)) if golden_cross(points, i)]
     assert crossings
     for i in crossings:
-        assert entry_ok(points, i, TRACK_BY_KEY[ULTRA])  # 구름 조건 없음
+        assert entry_ok(points, i, TRACK_BY_KEY[DAY])  # 구름 조건 없음
         assert entry_ok(points, i, TRACK_BY_KEY[LONG]) == above_cloud(points[i])
+
+
+def test_hit_rate_floors_sit_below_each_track_measured_rate():
+    """BR32: 목표가 클수록 도달률이 낮아진다. 하나의 문턱을 공유하면 목표가 큰 트랙에서
+    "문턱이 실측 능력보다 높은" 상태가 된다 -- 장기는 실측 20.9%인데 25% 문턱이면 5/29종만
+    통과했다(BR26에서 레짐 트랙에 대해 고쳤던 것과 같은 결함)."""
+    measured = {DAY: 0.364, MID: 0.277, LONG: 0.209}
+    for spec in TRACKS:
+        assert spec.min_hit_rate < measured[spec.key], f"{spec.label} 문턱이 실측 도달률 위에 있다"
+
+
+def test_floors_descend_with_target_size():
+    floors = [spec.min_hit_rate for spec in TRACKS]
+    assert floors == sorted(floors, reverse=True)

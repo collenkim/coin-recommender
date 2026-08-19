@@ -176,7 +176,7 @@ def test_message_format_with_no_recommendations():
 
     message = mock_post.call_args.kwargs["json"]["content"]
     # BR24: 단일 "이번 회차 추천 없음"에서 트랙별 사유로 바뀌었다 -- 어느 트랙이 왜 0건인지 구분된다.
-    assert "[단기]" in message and "[장기]" in message
+    assert "[단타]" in message and "[중기]" in message and "[장기]" in message
     assert "조건을 만족한 종목 없음" in message
 
 

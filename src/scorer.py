@@ -155,8 +155,8 @@ def generate_track_recommendations(
     """BR25: 한 트랙의 추천. 진입 타임프레임의 가장 최근 마감봉이 구름대 돌파면 후보가 되고,
     같은 조건의 과거 성적이 표본 하한을 넘으면 추천이 된다.
 
-    BR26: 적중률 하한 25%를 둔다. 기존 45%는 실측 능력(36.3%)보다 높아 우연히 높게 나온 코인만
-    통과시켰다 -- 25%는 트랙 실측 도달률(24~36%) 아래이므로 같은 편향을 만들지 않는다.
+    BR26/BR32: 적중률 하한은 트랙별이다(단타 25% / 중기 20% / 장기 15%). 문턱이 실측 능력보다
+    높으면 "우연히 높게 나온 코인"만 통과시킨다 -- 기존 레짐 트랙의 45% 문턱(실측 36.3%)이 그랬다.
     정렬은 Wilson 하한으로 한다."""
     if btc_cloud is None:
         btc_cloud = _btc_cloud_series(data_store)
@@ -176,7 +176,7 @@ def generate_track_recommendations(
         stats = compute_track_stats(candles, points, spec, sim, context)
         if stats["n"] < spec.min_samples or stats["hit_rate"] is None:
             continue
-        if stats["hit_rate"] < TRACK_MIN_HIT_RATE:
+        if stats["hit_rate"] < spec.min_hit_rate:
             continue
 
         entry_candle = candles[index]

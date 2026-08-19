@@ -132,9 +132,10 @@ def _regime_section(recommendations: list) -> list[str]:
 
 def _track_section(spec, recommendations: list) -> list[str]:
     """BR25: 트랙 하나 = 섹션 하나. 0건이어도 제목을 남겨 어느 트랙이 왜 비었는지 드러낸다."""
+    signal = f"{spec.timeframe} 골든크로스" + (" + 구름 위" if spec.require_above_cloud else "")
     header = (
         f"[{spec.label}] {_hours_text(spec.hold_hours)} 내 +{spec.target:.0%} 목표"
-        f" (손절 -{spec.stop:.0%}, {spec.timeframe} 구름대 돌파) · {len(recommendations)}개"
+        f" (손절 -{spec.stop:.0%}, {signal}) · {len(recommendations)}개"
     )
     if not recommendations:
         return [f"{header}\n· 조건을 만족한 종목 없음"]
