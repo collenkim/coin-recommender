@@ -148,10 +148,10 @@ def test_pagination_guard_covers_every_collected_timeframe():
     기간에 4배의 페이지를 쓴다. 각 타임프레임을 **자기 lookback**으로 검사한다."""
     from src.binance_client import _MAX_LIMIT, _MAX_PAGES
     from src.config import settings
-    from src.tracks import COLLECTED_TIMEFRAMES, LOOKBACK_DAYS_BY_TIMEFRAME, TIMEFRAME_HOURS
+    from src.tracks import COLLECTED_TIMEFRAMES, TIMEFRAME_HOURS
 
     for timeframe in COLLECTED_TIMEFRAMES:
-        days = LOOKBACK_DAYS_BY_TIMEFRAME.get(timeframe, settings.backtest_lookback_days)
+        days = settings.backtest_lookback_days
         needed = days * 24 / TIMEFRAME_HOURS[timeframe] / _MAX_LIMIT
         assert _MAX_PAGES > needed, (
             f"{timeframe}: {_MAX_PAGES}페이지로는 {needed:.0f}페이지가 필요한 {days}일 lookback을 못 채운다"

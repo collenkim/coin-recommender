@@ -19,7 +19,7 @@ from src.scorer import (
     generate_all_tracks,
     generate_recommendations,
 )
-from src.tracks import COLLECTED_TIMEFRAMES, LOOKBACK_DAYS_BY_TIMEFRAME, TRACKS
+from src.tracks import COLLECTED_TIMEFRAMES, TRACKS
 
 _EVALUATION_WINDOW_HOURS = 24
 
@@ -106,18 +106,13 @@ def _collect_and_store_binance(
     갖고 있는가"를 함께 본다(종목·타임프레임당 1요청). 있으면 더 받을 과거가 없으므로 증분으로
     간다. 2026-08-18 lookback 확대로 드러난 결함이다.
     """
-    default_lookback = lookback_days or settings.backtest_lookback_days
+    target_start = datetime.now(timezone.utc) - timedelta(days=lookback_days or settings.backtest_lookback_days)
     for timeframe in timeframes:
         # BR29: 아직 새 봉이 마감되지 않았으면 조회 자체를 건너뛴다. 주봉은 주 1회, 월봉은 월 1회만
         # 새 봉이 생기는데 매시간 물어보고 있었다 -- 30종 x 7봉이면 시간당 210요청 중 상당수가
         # "변화 없음"을 확인하는 데만 쓰였다.
         if _is_up_to_date(data_store, symbol, timeframe):
             continue
-        # BR25: 짧은 봉은 얕게 받는다 -- 15분봉에 16년을 요구하면 561페이지가 필요해
-        # _MAX_PAGES에서 조용히 잘린다. 트랙에 필요한 건 최대 이력이 아니라 충분한 표본이다.
-        target_start = datetime.now(timezone.utc) - timedelta(
-            days=LOOKBACK_DAYS_BY_TIMEFRAME.get(timeframe, default_lookback)
-        )
         try:
             first_time = data_store.get_first_candle_time(SOURCE, symbol, timeframe)
             if first_time is not None and first_time > target_start and _is_exchange_earliest(
@@ -128,8 +123,13 @@ def _collect_and_store_binance(
             if first_time is None or first_time > target_start:
                 candles = binance_client.get_klines_since(symbol, timeframe, target_start)
             else:
+                # BR30: 증분도 페이지네이션한다. `get_klines`는 1회 1,000봉이 상한이라 15분봉이면
+                # 10일치뿐이다 -- 오래 뒤처진 타임프레임은 따라잡는 데 수백 회가 걸리고, 그동안
+                # 데이터에 구멍이 남는다(실측: BNB 15분봉이 2022-05에서 멈춰 있었다).
+                # `get_klines_since`는 최신이면 짧은 페이지를 만나 1요청으로 끝나므로 정상
+                # 상태의 비용은 같다.
                 last_time = data_store.get_last_candle_time(SOURCE, symbol, timeframe)
-                candles = binance_client.get_klines(symbol, timeframe, start_time=last_time, limit=1000)
+                candles = binance_client.get_klines_since(symbol, timeframe, last_time)
                 candles = [c for c in candles if c.candle_time > last_time]
             data_store.upsert_candles(SOURCE, symbol, timeframe, candles)
         except Exception:

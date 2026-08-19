@@ -11,10 +11,10 @@ _BINANCE_TICKER_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
 _MAX_LIMIT = 1000
 # 폭주 방지 상한. **가장 짧은 봉 × 그 봉의 lookback**이 기준이다 -- 모자라면 예외 없이 조용히
 # 잘려서, 설정한 lookback보다 짧은 이력으로 백테스트가 돌아간다.
-# 16년치 30분봉이 280,320개(281페이지)로 현재 최대 요구치다(1시간봉은 141페이지).
-# 60 -> 130 -> 150 -> 300으로 올려 왔다. lookback이나 수집 타임프레임을 바꿀 때는 반드시
-# 함께 확인한다 -- `test_pagination_guard_covers_every_collected_timeframe`이 검사한다.
-_MAX_PAGES = 300
+# 16년치 15분봉이 560,640개(561페이지)로 현재 최대 요구치다(30분봉 281, 1시간봉 141).
+# 60 -> 130 -> 150 -> 300 -> 600으로 올려 왔다. lookback이나 수집 타임프레임을 바꿀 때는
+# 반드시 함께 확인한다 -- `test_pagination_guard_covers_every_collected_timeframe`이 검사한다.
+_MAX_PAGES = 600
 
 T = TypeVar("T")
 

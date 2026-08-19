@@ -191,7 +191,10 @@ def test_binance_collection_stops_refetching_once_it_holds_the_exchange_earliest
 
     _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h",))
 
-    mock_binance.get_klines_since.assert_not_called()
+    # BR30: 증분도 `get_klines_since`를 쓰므로, 백필과 구분되는 신호는 "전량 재수집이 아니라
+    # 마지막 저장 봉부터"라는 점이다.
+    mock_binance.get_klines_since.assert_called_once()
+    assert mock_binance.get_klines_since.call_args.args[2] == mock_store.get_last_candle_time.return_value
 
 
 def test_binance_collection_backfills_when_the_earliest_probe_fails():
@@ -223,8 +226,9 @@ def test_binance_collection_uses_incremental_once_history_is_deep_enough():
 
     _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h",))
 
-    mock_binance.get_klines_since.assert_not_called()
-    mock_binance.get_klines.assert_called_once()
+    # 백필(target_start부터)이 아니라 증분(마지막 저장 봉부터)이어야 한다
+    mock_binance.get_klines_since.assert_called_once()
+    assert mock_binance.get_klines_since.call_args.args[2] == mock_store.get_last_candle_time.return_value
 
 
 # --- evaluate_pending_outcomes (BR9) ---
@@ -304,10 +308,9 @@ def test_earliest_probe_is_cached_so_later_runs_skip_the_request(tmp_path):
 
     _collect_and_store_binance(spy, mock_binance, "SOLUSDT", timeframes=("1h",))
 
-    # 증분 조회 1회만 -- 최초봉 확인용 추가 요청이 없다
-    assert mock_binance.get_klines.call_count == 1
-    assert mock_binance.get_klines.call_args.kwargs.get("limit") == 1000
-    mock_binance.get_klines_since.assert_not_called()
+    # 최초봉 확인용 추가 요청 없이 증분 조회만 -- BR30에서 증분도 페이지네이션으로 바뀌었다
+    mock_binance.get_klines.assert_not_called()
+    mock_binance.get_klines_since.assert_called_once()
 
 
 def test_exchange_earliest_round_trips_through_the_store(tmp_path):
@@ -350,8 +353,29 @@ def test_collection_runs_once_the_next_bar_has_closed(tmp_path):
     )
     store.set_exchange_earliest("binance", "SOLUSDT", "1w", stale, datetime.now(timezone.utc))
     mock_binance = MagicMock()
-    mock_binance.get_klines.return_value = []
+    mock_binance.get_klines_since.return_value = []
 
     _collect_and_store_binance(store, mock_binance, "SOLUSDT", timeframes=("1w",))
 
-    mock_binance.get_klines.assert_called_once()  # 증분 조회
+    mock_binance.get_klines_since.assert_called_once()  # 증분 조회(페이지네이션)
+
+
+def test_incremental_catches_up_across_a_long_gap(tmp_path):
+    """BR30: 증분이 1회 1,000봉이면 15분봉은 10일치뿐이라, 몇 년 뒤처진 타임프레임이
+    영영 따라잡지 못하고 데이터에 구멍이 남는다(실측: BNB 15분봉이 2022-05에서 정지)."""
+    from src.data_store import Candle, DataStore
+    from src.pipeline import _collect_and_store_binance
+
+    store = DataStore(str(tmp_path / "g.db"))
+    stale = datetime.now(timezone.utc) - timedelta(days=1000)
+    store.upsert_candles("binance", "SOLUSDT", "15m", [Candle("SOLUSDT", "15m", stale, 1, 1, 1, 1, 1.0)])
+    store.set_exchange_earliest("binance", "SOLUSDT", "15m", stale, datetime.now(timezone.utc))
+
+    mock_binance = MagicMock()
+    mock_binance.get_klines_since.return_value = []
+
+    _collect_and_store_binance(store, mock_binance, "SOLUSDT", timeframes=("15m",))
+
+    # 단발 조회가 아니라 페이지네이션 경로를 써야 한다
+    mock_binance.get_klines_since.assert_called_once()
+    mock_binance.get_klines.assert_not_called()
