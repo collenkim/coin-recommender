@@ -175,9 +175,10 @@ def test_message_format_with_no_recommendations():
         send_notification([], RUN_TIME, None, None, "https://discord.example/webhook")
 
     message = mock_post.call_args.kwargs["json"]["content"]
-    # BR24: 단일 "이번 회차 추천 없음"에서 트랙별 사유로 바뀌었다 -- 어느 트랙이 왜 0건인지 구분된다.
-    assert "[단타]" in message and "[중기]" in message and "[장기]" in message
-    assert "조건을 만족한 종목 없음" in message
+    # BR36: 추천이 없으면 섹션을 통째로 뺀다 -- 대부분의 회차가 0건이라 빈 제목만 남았었다.
+    for label in ("[단타]", "[중기]", "[장기]", "[기존]"):
+        assert label not in message
+    assert "추천 코인 0개" in message
 
 
 def test_header_reports_the_recommendation_count_and_kst_run_time():
@@ -213,7 +214,7 @@ def test_zero_recommendations_still_reports_a_count():
 
     message = mock_post.call_args.kwargs["json"]["content"]
     assert "추천 코인 0개" in message
-    assert "조건을 만족한 종목 없음" in message
+    assert "[단타]" not in message  # BR36: 빈 섹션 제거
 
 
 # --- 가격 도달 알림 (BR22) ---
@@ -247,9 +248,10 @@ def test_price_alert_lists_each_event_as_a_numbered_paragraph():
 
     message = mock_post.call_args.kwargs["json"]["content"]
     assert message.startswith("[coin-recommender] 가격 알림 3건")
-    assert "(1) SOLUSDT · 매도가 도달" in message
-    assert "(2) ADAUSDT · 손절가 도달" in message
-    assert "(3) WLDUSDT · 진입가 도달" in message
+    # BR36: 같은 종목이 여러 트랙에 뽑힐 수 있어 어느 트랙의 도달인지 함께 표시한다.
+    assert "(1) SOLUSDT · [기존] 매도가 도달" in message
+    assert "(2) ADAUSDT · [기존] 손절가 도달" in message
+    assert "(3) WLDUSDT · [기존] 진입가 도달" in message
     assert "08-11 15:32 KST" in message  # 06:32 UTC = 15:32 KST
     assert "UTC" not in message
 
@@ -310,8 +312,7 @@ def test_phase_line_appears_even_with_zero_recommendations():
     """게이트가 닫혀 0건인지, 통과한 코인이 없어 0건인지 구분되게 하는 것이 이 줄의 목적이다."""
     message = _send_with_phase([], _phase("strong_bull", ("BTCUSDT", "strong_bull", _FULL)))
     assert "추천 코인 0개" in message
-    assert "강세장" in message
-    assert "조건을 만족한 종목 없음" in message
+    assert "강세장" in message  # 국면 문구는 추천이 0건이어도 남는다
 
 
 def test_phase_lists_btc_and_eth_separately_with_all_five_horizons():
@@ -335,7 +336,7 @@ def test_phase_line_is_omitted_when_phase_is_unknown():
     """이력 부족을 '상승장 아님'으로 적으면 데이터 결손이 시장 판단으로 둔갑한다."""
     message = _send_with_phase([], None)
     assert "강세장" not in message and "약상승장" not in message
-    assert "조건을 만족한 종목 없음" in message
+    assert "추천 코인 0개" in message
 
 
 def test_recommendations_still_render_below_the_phase_line():
@@ -348,4 +349,39 @@ def test_recommendations_still_render_below_the_phase_line():
 def test_phase_is_optional_so_existing_callers_are_unaffected():
     with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
         send_notification([], RUN_TIME, None, None, "https://discord.example/webhook")
-    assert "조건을 만족한 종목 없음" in mock_post.call_args.kwargs["json"]["content"]
+    assert "추천 코인 0개" in mock_post.call_args.kwargs["json"]["content"]
+
+
+def test_price_alert_shows_which_track_reached_the_price():
+    """BR36: 단타(+2%)와 장기(+10%)가 같은 종목에 동시에 걸릴 수 있다 -- 어느 쪽 도달인지
+    구분되지 않으면 사용자가 어떤 포지션을 정리해야 할지 알 수 없다."""
+    from src.data_store import TARGET_HIT
+    from src.notifier import send_price_alert
+
+    at = datetime(2026, 8, 11, 6, 32, tzinfo=UTC)
+    day = FakePriceEvent("SOLUSDT", TARGET_HIT, 78.5, at)
+    day.track = "day"
+    long = FakePriceEvent("SOLUSDT", TARGET_HIT, 85.0, at)
+    long.track = "long"
+
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_price_alert([day, long], RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert "[단타] 매도가 도달" in message
+    assert "[장기] 매도가 도달" in message
+
+
+def test_price_alert_sends_one_message_for_all_events():
+    """여러 도달이 한 번에 발생해도 메시지는 하나다 -- 종목마다 따로 보내면 알림이 쌓인다."""
+    from src.data_store import TARGET_HIT
+    from src.notifier import send_price_alert
+
+    at = datetime(2026, 8, 11, 6, 32, tzinfo=UTC)
+    events = [FakePriceEvent(f"SYM{i}USDT", TARGET_HIT, 100.0, at) for i in range(4)]
+
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_price_alert(events, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    assert mock_post.call_count == 1  # 채널 1개 = 요청 1회
+    assert "가격 알림 4건" in mock_post.call_args.kwargs["json"]["content"]

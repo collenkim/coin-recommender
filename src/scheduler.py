@@ -41,8 +41,9 @@ def start_scheduler(app: FastAPI) -> BackgroundScheduler:
 
     coalesce+misfire_grace_time avoid piling up missed runs after downtime (NFR Design).
 
-    BR22: 가격 감시는 5분마다 따로 돈다. 활성 추천이 없으면 조회 없이 즉시 끝나므로
-    추천이 없는 동안의 비용은 사실상 없다."""
+    BR22/BR36: 가격 감시는 **2분마다** 따로 돈다(5분에서 단축). 활성 추천이 없으면 조회 없이
+    즉시 끝나므로 추천이 없는 동안의 비용은 사실상 없다. 도달 알림은 추천 알림과 별도 메시지이며,
+    같은 (종목, 트랙, 이벤트)는 최초 1회만 나간다(기록 컬럼이 곧 중복 방지 장치다)."""
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         _run_job,
@@ -53,7 +54,7 @@ def start_scheduler(app: FastAPI) -> BackgroundScheduler:
     )
     scheduler.add_job(
         _run_monitor_job,
-        trigger=CronTrigger(minute="*/5"),
+        trigger=CronTrigger(minute="*/2"),
         id=_MONITOR_JOB_ID,
         coalesce=True,
         misfire_grace_time=settings.scheduler_misfire_grace_seconds,

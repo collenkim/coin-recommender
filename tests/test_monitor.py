@@ -153,3 +153,46 @@ def test_legacy_rows_without_entry_price_are_skipped(tmp_path):
 
     assert check_price_events(store, client, ENTRY_TIME + timedelta(minutes=10)) == []
     client.get_klines_since.assert_not_called()
+
+
+def test_marking_one_track_does_not_silence_the_others(tmp_path):
+    """BR36: 같은 종목이 단타(+2%)·장기(+10%)에 동시에 뽑힐 수 있다. track 없이 기록하면
+    단타 도달이 장기까지 '알림 완료'로 표시해 장기 도달을 영영 못 알린다."""
+    from src.data_store import TARGET_HIT, DataStore
+
+    store = DataStore(str(tmp_path / "t.db"))
+    run_time = datetime(2026, 8, 20, tzinfo=timezone.utc)
+
+    class Rec:
+        def __init__(self, track):
+            self.market = "SOLUSDT"
+            self.expected_return = 0.01
+            self.n = 100
+            self.hit_count = 30
+            self.source = "binance"
+            self.entry_time = run_time
+            self.entry_price = 77.0
+            self.max_drawdown = -0.01
+            self.track = track
+
+    store.save_run(run_time, True, [Rec("day"), Rec("long")])
+    store.mark_price_event(run_time, "SOLUSDT", TARGET_HIT, run_time, "day")
+
+    still_watched = {r.track for r in store.get_monitorable_recommendations(run_time - timedelta(hours=1))}
+    assert "long" in still_watched  # 장기는 계속 감시 대상
+    assert "day" not in still_watched  # 단타만 종료
+
+
+def test_scheduler_checks_price_every_two_minutes():
+    from fastapi import FastAPI
+
+    from src.scheduler import _MONITOR_JOB_ID, start_scheduler, stop_scheduler
+
+    app = FastAPI()
+    scheduler = start_scheduler(app)
+    try:
+        job = scheduler.get_job(_MONITOR_JOB_ID)
+        minute = next(f for f in job.trigger.fields if f.name == "minute")
+        assert str(minute) == "*/2"
+    finally:
+        stop_scheduler(app)

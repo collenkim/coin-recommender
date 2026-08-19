@@ -554,14 +554,21 @@ class DataStore:
             for run_time, market, entry_price, entry_time, entry_touched_at, _, _, track in rows
         ]
 
-    def mark_price_event(self, run_time: datetime, market: str, event: str, at: datetime) -> None:
+    def mark_price_event(
+        self, run_time: datetime, market: str, event: str, at: datetime, track: str = "regime"
+    ) -> None:
         """BR22: 이벤트 발생 시각을 기록한다. 이미 값이 있으면 덮어쓰지 않는다 -- 최초 도달
-        시각이어야 의미가 있고, 이 컬럼이 곧 "이미 알림을 보냈다"는 표시이기도 하다."""
+        시각이어야 의미가 있고, 이 컬럼이 곧 "이미 알림을 보냈다"는 표시이기도 하다.
+
+        BR36: **track까지 봐야 한다.** 같은 종목이 단타(+2%)·중기(+5%)·장기(+10%)에 동시에
+        뽑힐 수 있는데, track 없이 (run_time, market)만 보면 단타 목표 도달이 나머지 두 트랙까지
+        "알림 완료"로 표시해 정작 그 트랙의 도달을 영영 알리지 못한다."""
         column = _PRICE_EVENT_COLUMNS[event]
         with self._connect() as conn:
             conn.execute(
-                f"UPDATE recommendations SET {column} = ? WHERE run_time = ? AND market = ? AND {column} IS NULL",
-                (at.isoformat(), run_time.isoformat(), market),
+                f"UPDATE recommendations SET {column} = ? "
+                f"WHERE run_time = ? AND market = ? AND track = ? AND {column} IS NULL",
+                (at.isoformat(), run_time.isoformat(), market, track),
             )
 
     def record_outcome(self, outcome) -> None:

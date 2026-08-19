@@ -34,6 +34,7 @@ class PriceEvent:
     kind: str  # ENTRY_TOUCHED | TARGET_HIT | STOP_HIT
     price: float
     at: datetime
+    track: str = "regime"
 
 
 def _events_for(rec: MonitoredRecommendation, candles: list) -> list[PriceEvent]:
@@ -46,6 +47,7 @@ def _events_for(rec: MonitoredRecommendation, candles: list) -> list[PriceEvent]
     체결된 것으로 본다. 그리고 둘 중 하나가 나오면 포지션이 끝난 것이므로 즉시 중단한다.
     """
     target, stop, _ = _rules(rec)
+    track = getattr(rec, "track", "regime")
     target_price = rec.entry_price * (1 + target)
     stop_price = rec.entry_price * (1 - stop)
     entry_seen = rec.entry_touched_at is not None
@@ -55,14 +57,14 @@ def _events_for(rec: MonitoredRecommendation, candles: list) -> list[PriceEvent]
         if candle.candle_time < rec.entry_time:
             continue
         if candle.low <= stop_price:
-            events.append(PriceEvent(rec.market, rec.run_time, STOP_HIT, stop_price, candle.candle_time))
+            events.append(PriceEvent(rec.market, rec.run_time, STOP_HIT, stop_price, candle.candle_time, track))
             break
         if candle.high >= target_price:
-            events.append(PriceEvent(rec.market, rec.run_time, TARGET_HIT, target_price, candle.candle_time))
+            events.append(PriceEvent(rec.market, rec.run_time, TARGET_HIT, target_price, candle.candle_time, track))
             break
         if not entry_seen and candle.low <= rec.entry_price:
             entry_seen = True
-            events.append(PriceEvent(rec.market, rec.run_time, ENTRY_TOUCHED, rec.entry_price, candle.candle_time))
+            events.append(PriceEvent(rec.market, rec.run_time, ENTRY_TOUCHED, rec.entry_price, candle.candle_time, track))
 
     return events
 
@@ -89,7 +91,7 @@ def check_price_events(data_store: DataStore, binance_client: BinanceClient, now
             continue
 
         for event in _events_for(rec, candles):
-            data_store.mark_price_event(event.run_time, event.market, event.kind, event.at)
+            data_store.mark_price_event(event.run_time, event.market, event.kind, event.at, event.track)
             new_events.append(event)
 
     return new_events

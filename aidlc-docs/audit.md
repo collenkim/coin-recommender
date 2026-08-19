@@ -1860,3 +1860,22 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation.
 
 ---
+## Follow-up Request (2026-08-20): 빈 섹션 제거 / 도달 알림 분리·2분 주기·중복 방지
+**Timestamp**: 2026-08-20T00:10:00Z
+**User Input**: "Using AI-DLC 추천할 코인이 없으면 추천 내용은 제거해줘. [단타], [중기], [장기], [기존] 그리고 코인에 대해 손절가 매도가 도달시 알림은 별도로 구성해서 전달해줘. 스케줄 주기는 추천코인에 대해 기간내에 도달했는지 여부 2분마다 체크하도록 따로 돌려줘. 그리고 추천 코인 도달 내용은 중복되서 보내지말고, 중복되지 않게 하나로 보내줘."
+**AI Response**: 4항목으로 분해. 2·4번(도달 알림 분리·중복 방지)은 BR22로 이미 구현돼 있을 가능성이 있어 현행 동작 검증 선행.
+**Context**: Requirements Analysis.
+
+---
+## Code Generation (2026-08-20): BR36 빈 섹션 제거 + 도달 알림 개선
+**Timestamp**: 2026-08-20T00:40:00Z
+**AI Response**: 요청 4항목 처리.
+**1. 빈 섹션 제거** -- 추천 0건인 트랙 섹션을 통째로 뺀다. BR25의 "0건이어도 제목 유지" 방침을 뒤집는다(대부분 회차가 0건이라 빈 제목만 남았음). 국면 문구·역프 알림은 유지.
+**2. 도달 알림 분리** -- **이미 구현돼 있었다**(BR22). 추천 알림과 별도 메시지, 별도 스케줄. 여러 도달도 메시지 하나로 묶여 발송된다. 현행 확인만 하고 변경 없음.
+**3. 감시 주기 5분 -> 2분** -- `CronTrigger(minute="*/2")`.
+**4. 중복 방지 -- 결함 발견·수정**: `mark_price_event`가 `(run_time, market)`만 보고 **track이 빠져 있었다.** 같은 종목이 여러 트랙에 뽑히면 한 트랙의 도달이 나머지까지 "알림 완료"로 표시해 그 트랙 도달을 영영 못 알린다. BR32에서 PK를 `(run_time, market, track)`으로 넓힐 때 이 UPDATE만 따라가지 못한 것. `AND track = ?` 추가 + `PriceEvent.track` 신설 + 알림 문구에 트랙 표시.
+**검증**: 단타 도달 기록 후에도 장기가 감시 대상으로 남는 것을 테스트로 실증.
+**Files Modified**: `src/notifier.py`, `src/scheduler.py`, `src/monitor.py`, `src/data_store.py`, `tests/test_notifier.py`·`tests/test_monitor.py`(4건 추가). 251/251 통과.
+**Context**: Code Generation.
+
+---

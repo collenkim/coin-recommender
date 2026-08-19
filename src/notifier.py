@@ -68,6 +68,9 @@ def _recommendation_block(order: int, r) -> str:
     return "\n".join(lines)
 
 
+# BR36: 같은 종목이 여러 트랙에 뽑힐 수 있으므로 어느 트랙의 도달인지 표시한다.
+_TRACK_LABELS = {t.key: f"[{t.label}] " for t in TRACKS} | {"regime": "[기존] "}
+
 _EVENT_LABELS = {
     ENTRY_TOUCHED: ("진입가 도달 (지금 진입 가능)", "진입가", f"기준"),
     TARGET_HIT: ("매도가 도달", "매도가", f"+{TARGET_RETURN:.0%}"),
@@ -84,7 +87,7 @@ def _format_price_alert(now: datetime, events: list) -> str:
         blocks.append(
             "\n".join(
                 [
-                    f"({order}) {event.market} · {title}",
+                    f"({order}) {event.market} · {_TRACK_LABELS.get(getattr(event, 'track', 'regime'), '')}{title}",
                     f"· {price_label}: {event.price:,.6g}  ({note})",
                     f"· 도달 시각: {_kst(event.at)} KST",
                 ]
@@ -124,15 +127,20 @@ def _hours_text(hours: int) -> str:
 
 
 def _regime_section(recommendations: list) -> list[str]:
-    """BR18~BR21 레짐 게이트 트랙. BR25 4트랙과 게이트·진입조건이 달라 섹션을 따로 둔다."""
-    header = f"[기존] 레짐 게이트 · 24시간 내 +{TARGET_RETURN:.0%} 목표 · {len(recommendations)}개"
+    """BR18~BR21 레짐 게이트 트랙. BR25 4트랙과 게이트·진입조건이 달라 섹션을 따로 둔다.
+
+    BR36: 추천이 없으면 **섹션 자체를 뺀다.** 이전에는 "어느 트랙이 왜 비었는지 드러내려고"
+    제목을 남겼으나, 대부분의 회차가 0건이라 메시지가 빈 제목으로만 채워졌다."""
     if not recommendations:
-        return [f"{header}\n· 조건을 만족한 종목 없음"]
+        return []
+    header = f"[기존] 레짐 게이트 · 24시간 내 +{TARGET_RETURN:.0%} 목표 · {len(recommendations)}개"
     return [header] + [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
 
 
 def _track_section(spec, recommendations: list) -> list[str]:
-    """BR25: 트랙 하나 = 섹션 하나. 0건이어도 제목을 남겨 어느 트랙이 왜 비었는지 드러낸다."""
+    """BR25/BR36: 트랙 하나 = 섹션 하나. **추천이 없으면 섹션을 통째로 뺀다.**"""
+    if not recommendations:
+        return []
     signal = f"{spec.timeframe} 골든크로스" + (" + 구름 위" if spec.require_above_cloud else "")
     # BR34: 손절 집행은 사용자 몫이다. 다만 발표하는 확률은 **표시된 손절을 전제로** 계산된
     # 값이므로, 다른 손절을 쓰면 그 확률은 더 이상 맞지 않는다는 점을 함께 적는다.
@@ -140,8 +148,6 @@ def _track_section(spec, recommendations: list) -> list[str]:
         f"[{spec.label}] {_hours_text(spec.hold_hours)} 내 +{spec.target:.0%} 목표"
         f" (손절 -{spec.stop:.0%}, {signal}) · {len(recommendations)}개"
     )
-    if not recommendations:
-        return [f"{header}\n· 조건을 만족한 종목 없음"]
     return [header] + [_recommendation_block(i, r) for i, r in enumerate(recommendations, 1)]
 
 
