@@ -1540,3 +1540,11 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation.
 
 ---
+## Correction (2026-08-19): 초단기 '약상승장 전용' 제거
+**Timestamp**: 2026-08-19T08:00:00Z
+**User Input**: "Using AI-DLC 초단기는 약상승장 전용 아닌데.  초단기, 단기, 중기, 장기 기준을 정해둔거고,  전용이런건 없어."
+**AI Response**: AI의 오독. 사용자가 "하락장이 아닌 이상 약상승장에는 도달할 테니까"라고 한 것은 **초단기 트랙을 유지하는 이유**였는데, 이를 개방 국면 제한 조건으로 구현했다. 트랙은 목표·보유 기간의 정의일 뿐이며 트랙별 전용 국면은 없다. `TrackSpec.only_phases` 메커니즘을 **완전히 제거**한다(내가 추가한 것이므로 되돌린다).
+**결과**: 초단기도 다른 트랙과 동일하게 개방 국면(강세장/상승장/약상승장) 전체에서 동작한다. 전 구간 기대수익 -0.05%가 그대로 적용된다는 뜻이며, 이 수치는 이미 보고했다.
+**Context**: 오독 정정.
+
+---

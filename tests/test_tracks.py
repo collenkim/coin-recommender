@@ -6,6 +6,7 @@ from src.data_store import TIMEFRAME_HOURS, Candle
 from src.features import compute_ichimoku
 from src.tracks import (
     COLLECTED_TIMEFRAMES,
+    TrackSpec,
     MIN_HIT_RATE,
     RSI_MIN,
     EntryContext,
@@ -240,11 +241,10 @@ def test_hit_rate_floor_sits_below_measured_capability():
     assert 0.25 <= MIN_HIT_RATE <= 0.30
 
 
-def test_ultra_track_only_opens_in_weak_bull():
-    """보조지표를 다 걸어도 국면별 기대수익이 약상승장(+0.05%)만 양수였다."""
-    assert TRACK_BY_KEY[ULTRA].only_phases == ("weak_bull",)
-    for key in (SHORT, MID, LONG):
-        assert TRACK_BY_KEY[key].only_phases is None
+def test_tracks_have_no_per_track_phase_restriction():
+    """트랙은 목표·보유 기간의 정의일 뿐이다 -- 게이트가 연 국면에서는 네 트랙이 모두 동작한다."""
+    assert not hasattr(TrackSpec, "only_phases")
+    assert "only_phases" not in TrackSpec.__dataclass_fields__
 
 
 def test_stats_apply_the_aux_filter():

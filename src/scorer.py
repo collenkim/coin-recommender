@@ -195,13 +195,7 @@ def generate_all_tracks(
         return {spec.key: [] for spec in TRACKS}
     btc_cloud = _btc_cloud_series(data_store)
     candle_cache: dict = {}
-    result = {}
-    for spec in TRACKS:
-        # 트랙별 개방 국면 제한(BR26). 초단기는 약상승장에서만 기대수익이 양수였다.
-        if spec.only_phases is not None and phase.phase not in spec.only_phases:
-            result[spec.key] = []
-            continue
-        result[spec.key] = generate_track_recommendations(
-            candidates, data_store, spec, btc_cloud, candle_cache
-        )[:limit]
-    return result
+    return {
+        spec.key: generate_track_recommendations(candidates, data_store, spec, btc_cloud, candle_cache)[:limit]
+        for spec in TRACKS
+    }
