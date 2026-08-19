@@ -3,8 +3,8 @@
 BR24(반감기 사이클 90일 트랙)를 대체한다. 반감기 여부와 무관하게 동작하며, 게이트는 시장 국면
 (BR23을 확장한 3단계: 약상승장 / 상승장 / 강세장)이 담당한다.
 
-**진입은 구름대 돌파다** -- "직전 봉은 구름 위가 아니었고 이번 봉 종가가 구름 위". 어느 타임프레임의
-돌파가 가장 좋은지는 실측으로 정했다 (5종목 × 365일):
+**진입은 전환선/기준선 골든크로스다** (BR27로 구름대 돌파에서 교체). 구름 돌파는 어느 타임프레임의
+돌파가 가장 좋은지 실측으로 4시간봉을 골랐었다 (5종목 × 365일):
 
 | 타임프레임 | 돌파수 | 초단기 +2%/8h | 단기 +3.5%/12h | 중기 +5%/24h |
 |---|---|---|---|---|
@@ -15,8 +15,22 @@ BR24(반감기 사이클 90일 트랙)를 대체한다. 반감기 여부와 무�
 | **4h** | 277 | **25.1%** | **14.6%** | 13.7% |
 | 1d | 22 | 22.7% | 9.1% | 4.5% |
 
-4시간봉이 초단기·단기에서 1위, 중기는 1시간봉이 근소 우위다. 1분/3분/5분봉은 돌파 건수만 많고
-확률은 낮아 수집 대상에서 뺐다(23GB를 쓰고 이득이 창마다 부호가 갈렸다).
+1분/3분/5분봉은 돌파 건수만 많고 확률은 낮아 수집 대상에서 뺐다(23GB를 쓰고 이득이 창마다
+부호가 갈렸다).
+
+**BR27(2026-08-19)에서 두 가지를 바꿨다** -- 전 트랙 실측 결과 신호와 판정 해상도 모두에서
+일관된 개선이 나왔다:
+
+| 트랙 | 이전(구름돌파·진입판정 동일봉) | 이후(골든크로스·진입 4h·판정 30m) |
+|---|---|---|
+| 초단기 | -0.03% | **+0.15%** |
+| 단기 | +0.03% | **+0.22%** |
+| 중기 | +0.09% | **+0.26%** |
+| 장기 | +0.37% | **+0.56%** |
+
+**판정 해상도를 진입봉과 분리한 이유**: 8시간 보유를 4시간봉으로 판정하면 봉이 2개뿐이라, 한 봉에서
+목표·손절이 겹칠 때 손절로 간주하는 보수적 규칙이 과하게 작동한다. 거친 해상도는 **손실 쪽으로
+편향**되므로 세분할수록 참값에 가깝다.
 """
 
 from bisect import bisect_right
@@ -24,7 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from src.data_store import Candle, close_time
-from src.features import IchimokuPoint
+from src.features import IchimokuPoint, above_cloud
 
 ULTRA = "ultra"
 SHORT = "short"
@@ -39,7 +53,13 @@ class TrackSpec:
     target: float
     stop: float
     hold_hours: int
-    timeframe: str  # 진입 판정에 쓰는 봉
+    timeframe: str  # 진입 신호를 찾는 봉
+    # BR27: 목표/손절 도달을 판정하는 봉. 진입봉과 분리한다 -- 같은 봉으로 판정하면 보유 기간이
+    # 짧은 트랙일수록 판정 봉수가 적어 손실 쪽으로 편향된다.
+    sim_timeframe: str = "30m"
+    # BR27: 진입 봉이 구름 위일 것을 추가로 요구할지. 장기에서만 유효했다
+    # (장기 +0.56% -> +1.06%). 초단기는 오히려 손해(+0.15% -> +0.12%)라 켜지 않는다.
+    require_above_cloud: bool = False
     min_samples: int = 10
 
 
@@ -48,11 +68,13 @@ class TrackSpec:
 # +10%/-7%/7일로 재설정했다(실측 도달률 32%, 기대수익 +0.2%).
 # 트랙은 **목표와 보유 기간의 정의일 뿐**이며 트랙별 전용 국면은 두지 않는다. 게이트(BR25)가
 # 연 국면에서는 네 트랙이 모두 동작한다.
+# BR27 실측으로 네 트랙 모두 진입 4시간봉 / 판정 30분봉이 최적이었다(중기는 진입봉이 1h -> 4h로
+# 바뀌었다: 1h 진입 +0.01% vs 4h 진입 +0.26%).
 TRACKS = (
     TrackSpec(ULTRA, "초단기", 0.02, 0.02, 8, "4h"),
     TrackSpec(SHORT, "단기", 0.03, 0.02, 12, "4h"),
-    TrackSpec(MID, "중기", 0.05, 0.03, 24, "1h"),
-    TrackSpec(LONG, "장기", 0.10, 0.07, 168, "4h"),
+    TrackSpec(MID, "중기", 0.05, 0.03, 24, "4h"),
+    TrackSpec(LONG, "장기", 0.10, 0.07, 168, "4h", require_above_cloud=True),
 )
 TRACK_BY_KEY = {t.key: t for t in TRACKS}
 
@@ -102,8 +124,8 @@ TIMEFRAME_HOURS = {
 
 
 def bars_for(spec: TrackSpec) -> int:
-    """보유 기간을 해당 타임프레임의 봉 수로 환산."""
-    return max(1, round(spec.hold_hours / TIMEFRAME_HOURS[spec.timeframe]))
+    """보유 기간을 **판정 봉** 수로 환산."""
+    return max(1, round(spec.hold_hours / TIMEFRAME_HOURS[spec.sim_timeframe]))
 
 
 @dataclass(frozen=True)
@@ -140,65 +162,118 @@ def aux_ok(context: EntryContext | None, candles: list[Candle], i: int) -> bool:
     return value is not None and value >= RSI_MIN
 
 
-def cloud_breakout(points: list[IchimokuPoint], i: int) -> bool:
-    """BR25: 직전 봉은 구름 위가 아니었고 이번 봉 종가가 구름 위 -- '뚫는 순간'.
+def entry_ok(points: list[IchimokuPoint], i: int, spec: TrackSpec) -> bool:
+    """BR27: 트랙의 진입 조건 = 골든크로스 (+ 장기는 구름 위).
 
-    BR24에서는 '구름 위 상태'를 썼지만 그건 90일 보유가 전제였다. 8~168시간 보유에서는
-    돌파 시점이 기준이 되어야 진입가가 움직임의 시작에 붙는다."""
+    "구름대도 참고하고 골든크로스인지 검증한다"는 요청을 트랙별 실측으로 나눈 결과다:
+
+    | 트랙 | 골든크로스 단독 | + 구름 위 |
+    |---|---|---|
+    | 초단기 | +0.15% | +0.12% |
+    | 단기 | +0.22% | +0.24% |
+    | 중기 | +0.26% | +0.26% |
+    | 장기 | +0.56% | **+1.06%** |
+
+    보유가 길수록 구름(장기 추세)이 의미를 갖고, 8시간짜리 초단기에는 오히려 방해가 된다."""
+    if not golden_cross(points, i):
+        return False
+    return above_cloud(points[i]) if spec.require_above_cloud else True
+
+
+def golden_cross(points: list[IchimokuPoint], i: int) -> bool:
+    """BR27: 전환선이 기준선을 아래에서 위로 교차한 봉.
+
+    구름 돌파를 대신해 채택했다 -- 전 트랙에서 기대수익이 더 높다(초단기 +0.15% vs +0.07%,
+    단기 +0.22% vs +0.10%, 중기 +0.26% vs +0.11%, 장기 +0.56% vs +0.40%).
+
+    도달률이 아니라 기대수익으로 골랐다는 점이 중요하다 -- 기존 `entry_signal`은 도달률 42.0%로
+    가장 높았지만 기대수익은 +0.02%였다. 타임아웃 청산의 손익이 결과를 좌우한다."""
     if i <= 0 or i >= len(points):
         return False
     point, previous = points[i], points[i - 1]
-    if None in (point.senkou_a, point.senkou_b, previous.senkou_a, previous.senkou_b):
+    if None in (point.tenkan, point.kijun, previous.tenkan, previous.kijun):
         return False
-    return point.close > max(point.senkou_a, point.senkou_b) and previous.close <= max(
-        previous.senkou_a, previous.senkou_b
-    )
+    return point.tenkan > point.kijun and previous.tenkan <= previous.kijun
 
 
-def simulate(candles: list[Candle], i: int, spec: TrackSpec) -> tuple[str, float, int] | None:
-    """목표/손절 중 먼저 닿는 쪽으로 판정. 보유 창이 안 차면 판정 불가(None).
+@dataclass(frozen=True)
+class SimSeries:
+    """BR27: 판정 전용 봉. 진입봉과 다른 해상도이므로 시각으로 정렬해 찾는다."""
 
-    단기 트랙 `simulate_trade`와 같은 규칙이다 -- 데이터 끝에서 잘라 타임아웃으로 세면 진행 중인
-    매매가 표본에 섞인다(BR24 구현에서 실제로 겪은 결함)."""
-    bars = bars_for(spec)
-    if i + bars >= len(candles):
-        return None
-    entry = candles[i].close
+    candles: list[Candle]
+    close_times: list[datetime]
+
+    @classmethod
+    def build(cls, candles: list[Candle]) -> "SimSeries":
+        return cls(candles=candles, close_times=[close_time(c) for c in candles])
+
+    def index_at(self, moment: datetime) -> int:
+        """`moment` 시점에 이미 마감된 마지막 판정봉. 없으면 -1."""
+        return bisect_right(self.close_times, moment) - 1
+
+
+def simulate(
+    entry_candles: list[Candle], i: int, spec: TrackSpec, sim: SimSeries
+) -> tuple[str, float, datetime] | None:
+    """목표/손절 중 먼저 닿는 쪽을 **판정봉 해상도**로 가린다. 보유 창이 안 차면 판정 불가(None).
+
+    판정봉을 진입봉과 분리한 이유: 8시간 보유를 4시간봉으로 재면 봉이 2개뿐이라, 한 봉에서
+    목표·손절이 겹칠 때 손절로 간주하는 보수적 규칙이 과하게 작동해 **손실 쪽으로 편향**된다.
+    실측상 판정만 30분봉으로 바꿔도 초단기 기대수익이 -0.03% -> +0.07%가 됐다.
+
+    데이터 끝에서 잘라 타임아웃으로 세지 않는다 -- 진행 중인 매매가 표본에 섞인다(BR24 결함).
+
+    반환값의 세 번째는 **청산 시각**이다. 겹침 제거를 시각으로 해야 진입봉과 판정봉의 격자가
+    달라도 어긋나지 않는다."""
+    entry = entry_candles[i].close
     if entry <= 0:
         return None
+    start = sim.index_at(close_time(entry_candles[i]))
+    bars = bars_for(spec)
+    if start < 0 or start + bars >= len(sim.candles):
+        return None
     target, stop = entry * (1 + spec.target), entry * (1 - spec.stop)
-    for j in range(i + 1, i + 1 + bars):
-        if candles[j].low <= stop:
-            return "loss", -spec.stop, j
-        if candles[j].high >= target:
-            return "win", spec.target, j
-    last = i + bars
-    return "timeout", candles[last].close / entry - 1, last
+    for j in range(start + 1, start + 1 + bars):
+        if sim.candles[j].low <= stop:
+            return "loss", -spec.stop, sim.close_times[j]
+        if sim.candles[j].high >= target:
+            return "win", spec.target, sim.close_times[j]
+    last = start + bars
+    return "timeout", sim.candles[last].close / entry - 1, sim.close_times[last]
 
 
 def compute_track_stats(
-    candles: list[Candle], points: list[IchimokuPoint], spec: TrackSpec, context: EntryContext | None = None
+    entry_candles: list[Candle],
+    points: list[IchimokuPoint],
+    spec: TrackSpec,
+    sim: SimSeries,
+    context: EntryContext | None = None,
 ):
     """해당 코인 이력에서 같은 조건으로 진입했던 과거 시점의 성적.
 
     보유 중에는 새 진입을 잡지 않는다(겹침 제거) -- 겹치는 진입을 각각 세면 같은 구간이 여러 번
-    반영되어 표본이 부풀고 확률이 왜곡된다."""
+    반영되어 표본이 부풀고 확률이 왜곡된다. 진입봉과 판정봉의 격자가 다르므로 **시각**으로 겹침을
+    판정한다."""
     wins = losses = timeouts = 0
     returns: list[float] = []
     drawdowns: list[float] = []
-    last_exit = -1
+    last_exit: datetime | None = None
     for i in range(len(points)):
-        if i <= last_exit or not cloud_breakout(points, i):
+        if not entry_ok(points, i, spec):
             continue
-        if not aux_ok(context, candles, i):
+        moment = close_time(entry_candles[i])
+        if last_exit is not None and moment < last_exit:
             continue
-        simulated = simulate(candles, i, spec)
+        if not aux_ok(context, entry_candles, i):
+            continue
+        simulated = simulate(entry_candles, i, spec, sim)
         if simulated is None:
             continue
-        result, ret, exit_index = simulated
-        entry = candles[i].close
-        drawdowns.append(min((candles[j].low / entry - 1) for j in range(i + 1, exit_index + 1)))
-        last_exit = exit_index
+        result, ret, exit_at = simulated
+        entry = entry_candles[i].close
+        start, end = sim.index_at(moment), sim.index_at(exit_at)
+        drawdowns.append(min((sim.candles[j].low / entry - 1) for j in range(start + 1, end + 1)))
+        last_exit = exit_at
         returns.append(ret)
         wins += result == "win"
         losses += result == "loss"
@@ -216,13 +291,16 @@ def compute_track_stats(
 
 
 def latest_entry(
-    candles: list[Candle], points: list[IchimokuPoint], context: EntryContext | None = None
+    candles: list[Candle],
+    points: list[IchimokuPoint],
+    spec: TrackSpec,
+    context: EntryContext | None = None,
 ) -> int | None:
-    """가장 최근 마감봉이 돌파 봉이고 보조지표까지 통과하면 그 인덱스."""
+    """가장 최근 마감봉이 골든크로스이고 보조지표까지 통과하면 그 인덱스."""
     if not points:
         return None
     i = len(points) - 1
-    if not cloud_breakout(points, i) or not aux_ok(context, candles, i):
+    if not entry_ok(points, i, spec) or not aux_ok(context, candles, i):
         return None
     return i
 

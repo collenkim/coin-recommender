@@ -3,23 +3,25 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.data_store import TIMEFRAME_HOURS, Candle
-from src.features import compute_ichimoku
+from src.features import above_cloud, compute_ichimoku
 from src.tracks import (
     COLLECTED_TIMEFRAMES,
-    TrackSpec,
-    MIN_HIT_RATE,
-    RSI_MIN,
-    EntryContext,
-    aux_ok,
     LONG,
     MID,
+    MIN_HIT_RATE,
+    RSI_MIN,
     SHORT,
     TRACK_BY_KEY,
     TRACKS,
     ULTRA,
+    EntryContext,
+    SimSeries,
+    TrackSpec,
+    aux_ok,
     bars_for,
-    cloud_breakout,
     compute_track_stats,
+    entry_ok,
+    golden_cross,
     latest_entry,
     simulate,
 )
@@ -57,11 +59,19 @@ def test_four_tracks_cover_the_requested_horizons():
     ]
 
 
-def test_entry_timeframes_match_the_measured_best():
-    """실측(5종목·365일): 초단기/단기는 4시간봉이 1위(25.1%/14.6%), 중기는 1시간봉(14.1%)."""
-    assert TRACK_BY_KEY[ULTRA].timeframe == "4h"
-    assert TRACK_BY_KEY[SHORT].timeframe == "4h"
-    assert TRACK_BY_KEY[MID].timeframe == "1h"
+def test_all_tracks_enter_on_4h_and_judge_on_30m():
+    """BR27 실측: 네 트랙 모두 진입 4시간봉 / 판정 30분봉이 기대수익 최고였다."""
+    for spec in TRACKS:
+        assert spec.timeframe == "4h"
+        assert spec.sim_timeframe == "30m"
+
+
+def test_simulation_timeframe_is_finer_than_the_entry_timeframe():
+    """같은 봉으로 판정하면 보유가 짧은 트랙일수록 판정 봉수가 적어 손실 쪽으로 편향된다."""
+    from src.tracks import TIMEFRAME_HOURS as TFH
+
+    for spec in TRACKS:
+        assert TFH[spec.sim_timeframe] < TFH[spec.timeframe]
 
 
 def test_collected_timeframes_exclude_the_expensive_short_ones():
@@ -78,114 +88,121 @@ def test_every_collected_timeframe_is_registered_for_close_time():
         assert timeframe in TIMEFRAME_HOURS
 
 
-def test_bars_for_converts_hold_hours_to_the_entry_timeframe():
-    assert bars_for(TRACK_BY_KEY[ULTRA]) == 2  # 8시간 / 4시간봉
-    assert bars_for(TRACK_BY_KEY[MID]) == 24  # 24시간 / 1시간봉
-    assert bars_for(TRACK_BY_KEY[LONG]) == 42  # 168시간 / 4시간봉
+def test_bars_for_converts_hold_hours_to_the_simulation_timeframe():
+    assert bars_for(TRACK_BY_KEY[ULTRA]) == 16  # 8시간 / 30분봉
+    assert bars_for(TRACK_BY_KEY[MID]) == 48  # 24시간 / 30분봉
+    assert bars_for(TRACK_BY_KEY[LONG]) == 336  # 168시간 / 30분봉
 
 
-# --- 구름대 돌파 ---
+# --- 진입 신호 (골든크로스) ---
 
 
-def _cloud_series(final_close):
-    """구름이 계산될 만큼 긴 이력 뒤에 마지막 봉만 통제한다."""
-    prices = [100.0] * 120 + [final_close]
-    candles = _candles(prices)
-    return candles, compute_ichimoku(candles)
-
-
-def test_breakout_fires_when_price_crosses_above_the_cloud():
-    candles, points = _cloud_series(200.0)
-    assert cloud_breakout(points, len(points) - 1)
-
-
-def test_breakout_does_not_fire_below_the_cloud():
-    candles, points = _cloud_series(50.0)
-    assert not cloud_breakout(points, len(points) - 1)
-
-
-def test_breakout_is_the_crossing_moment_not_the_state():
-    """이미 구름 위에 머물러 있는 봉은 돌파가 아니다 -- 진입가가 움직임의 시작에 붙어야 한다."""
-    prices = [100.0] * 120 + [200.0, 210.0]
-    candles = _candles(prices)
-    points = compute_ichimoku(candles)
-    assert cloud_breakout(points, len(points) - 2)  # 처음 뚫은 봉
-    assert not cloud_breakout(points, len(points) - 1)  # 이미 위에 있는 봉
-
-
-def test_breakout_is_false_during_warmup():
-    candles = _candles([100.0] * 5)
-    assert not cloud_breakout(compute_ichimoku(candles), 4)
-
-
-def test_latest_entry_returns_none_without_a_breakout():
-    candles, points = _cloud_series(50.0)
-    assert latest_entry(candles, points) is None
+def test_latest_entry_returns_none_without_a_golden_cross():
+    candles = _candles([100.0] * 200)
+    assert latest_entry(candles, compute_ichimoku(candles), TRACK_BY_KEY[ULTRA]) is None
 
 
 # --- 시뮬레이션 ---
 
 
-def _pad(prices, spec):
-    return _candles(prices + [prices[-1]] * (bars_for(spec) + 1 - len(prices)), spec.timeframe)
+# 진입봉(4h) 하나가 30분봉 8개에 대응한다. 판정봉 열은 진입봉 시작 시각부터 만들어야
+# `index_at(진입봉 마감)`이 유효한 인덱스를 돌려준다.
+_BARS_PER_ENTRY = 8
+
+
+def _sim_series(overrides=None, extra=8, spec=None, start=datetime(2025, 1, 1, tzinfo=UTC), flat=100.0):
+    """30분 판정봉 열. `overrides`는 {진입 후 몇 번째 봉: (고가, 저가)}."""
+    overrides = overrides or {}
+    total = _BARS_PER_ENTRY + bars_for(spec) + extra
+    bars = []
+    for i in range(total):
+        t = start + timedelta(minutes=30 * i)
+        offset = i - _BARS_PER_ENTRY + 1  # 진입봉 마감 다음 봉이 1
+        high, low = overrides.get(offset, (flat, flat))
+        bars.append(Candle("SOLUSDT", "30m", t, flat, high, low, flat, 1.0))
+    return SimSeries.build(bars)
+
+
+def _sim_after_entry(second_high, second_low, spec):
+    return _sim_series({1: (second_high, second_low)}, spec=spec)
 
 
 def test_target_hit_is_a_win():
     spec = TRACK_BY_KEY[ULTRA]
-    result, ret, _ = simulate(_pad([100.0, 102.0], spec), 0, spec)
+    result, ret, _ = simulate(_candles([100.0, 100.0]), 0, spec, _sim_after_entry(102.0, 100.0, spec))
     assert result == "win"
     assert ret == pytest.approx(spec.target)
 
 
 def test_stop_hit_is_a_loss():
     spec = TRACK_BY_KEY[ULTRA]
-    result, ret, _ = simulate(_pad([100.0, 98.0], spec), 0, spec)
+    result, ret, _ = simulate(_candles([100.0, 100.0]), 0, spec, _sim_after_entry(100.0, 98.0, spec))
     assert result == "loss"
     assert ret == pytest.approx(-spec.stop)
 
 
 def test_stop_takes_precedence_within_a_single_bar():
-    """단기 트랙 simulate_trade와 같은 보수적 규칙."""
+    """한 판정봉에서 둘 다 닿으면 선후를 알 수 없으므로 보수적으로 손절로 본다."""
     spec = TRACK_BY_KEY[ULTRA]
-    candles = _pad([100.0, 100.0], spec)
-    spanning = Candle("SOLUSDT", "4h", candles[1].candle_time, 100.0, 105.0, 97.0, 100.0, 1.0)
-    result, _, _ = simulate([candles[0], spanning] + candles[2:], 0, spec)
+    result, _, _ = simulate(_candles([100.0, 100.0]), 0, spec, _sim_after_entry(105.0, 97.0, spec))
     assert result == "loss"
 
 
 def test_timeout_settles_at_the_closing_price():
     spec = TRACK_BY_KEY[ULTRA]
-    result, ret, _ = simulate(_candles([100.0] + [100.5] * (bars_for(spec) + 2)), 0, spec)
+    result, ret, _ = simulate(_candles([100.0, 100.0]), 0, spec, _sim_series(spec=spec, flat=100.5))
     assert result == "timeout"
     assert ret == pytest.approx(0.005)
 
 
 def test_simulate_returns_none_while_the_hold_window_is_still_open():
     """진행 중인 매매를 타임아웃으로 세면 표본이 왜곡된다 -- BR24 구현에서 실제로 겪은 결함."""
-    spec = TRACK_BY_KEY[LONG]
-    assert simulate(_candles([100.0] * bars_for(spec)), 0, spec) is None
+    spec = TRACK_BY_KEY[ULTRA]
+    short = _sim_series(spec=spec, extra=-1)  # 보유 창보다 한 봉 모자람
+    assert simulate(_candles([100.0, 100.0]), 0, spec, short) is None
 
 
 # --- 표본 산출 ---
 
 
-def test_stats_are_empty_when_nothing_breaks_out():
+def _flat_sim(entry_candles, spec):
+    """진입봉 전체 구간을 덮는 평탄한 30분 판정봉."""
+    start = entry_candles[0].candle_time
+    total = len(entry_candles) * _BARS_PER_ENTRY + bars_for(spec) + 4
+    return SimSeries.build(
+        [
+            Candle("SOLUSDT", "30m", start + timedelta(minutes=30 * i), 100.0, 100.0, 100.0, 100.0, 1.0)
+            for i in range(total)
+        ]
+    )
+
+
+def test_stats_are_empty_when_there_is_no_golden_cross():
     candles = _candles([100.0] * 200)
-    stats = compute_track_stats(candles, compute_ichimoku(candles), TRACK_BY_KEY[ULTRA])
+    spec = TRACK_BY_KEY[ULTRA]
+    stats = compute_track_stats(candles, compute_ichimoku(candles), spec, _flat_sim(candles, spec))
     assert stats["n"] == 0
     assert stats["hit_rate"] is None
 
 
-def test_stats_count_breakouts_without_overlapping_holds():
+def test_golden_cross_fires_only_on_the_crossing_bar():
+    points = compute_ichimoku(_candles([100.0] * 60 + [130.0] * 30))
+    crossings = [i for i in range(1, len(points)) if golden_cross(points, i)]
+    assert crossings
+    for i in crossings:
+        assert points[i].tenkan > points[i].kijun
+        assert points[i - 1].tenkan <= points[i - 1].kijun
+
+
+def test_stats_count_entries_without_overlapping_holds():
     """보유 중 새 진입을 잡으면 같은 구간이 여러 번 반영되어 표본이 부푼다."""
     spec = TRACK_BY_KEY[ULTRA]
     prices = [100.0] * 120
     for _ in range(10):
-        prices += [200.0, 100.0]  # 돌파 -> 복귀 반복
+        prices += [200.0, 100.0]
     prices += [100.0] * 20
     candles = _candles(prices)
-    stats = compute_track_stats(candles, compute_ichimoku(candles), spec)
-    assert stats["n"] <= 10  # 돌파 횟수를 넘지 않는다
+    stats = compute_track_stats(candles, compute_ichimoku(candles), spec, _flat_sim(candles, spec))
     assert stats["n"] == stats["hit_count"] + stats["loss_count"] + stats["timeout_count"]
 
 
@@ -249,14 +266,31 @@ def test_tracks_have_no_per_track_phase_restriction():
 
 def test_stats_apply_the_aux_filter():
     """보조지표가 걸리면 같은 이력에서 표본이 줄어야 한다."""
-    prices = [100.0] * 120
-    for _ in range(6):
-        prices += [200.0, 100.0]
-    prices += [100.0] * 60
+    # 골든크로스가 실제로 발생하는 형태: 횡보 후 상승 전환을 반복시킨다.
+    prices = [100.0] * 60
+    for _ in range(4):
+        prices += [100.0 + i for i in range(30)] + [130.0 - i for i in range(30)]
     candles = _candles(prices)
     points = compute_ichimoku(candles)
     spec = TRACK_BY_KEY[ULTRA]
-    without = compute_track_stats(candles, points, spec)
-    blocked = compute_track_stats(candles, points, spec, _ctx(btc=False, n=len(candles)))
+    sim = _flat_sim(candles, spec)
+    without = compute_track_stats(candles, points, spec, sim)
+    blocked = compute_track_stats(candles, points, spec, sim, _ctx(btc=False, n=len(candles)))
     assert blocked["n"] == 0
     assert without["n"] > 0
+
+
+def test_only_the_long_track_requires_price_above_the_cloud():
+    """실측: 장기 +0.56% -> +1.06%로 크게 개선되지만 초단기는 +0.15% -> +0.12%로 손해."""
+    assert TRACK_BY_KEY[LONG].require_above_cloud
+    for key in (ULTRA, SHORT, MID):
+        assert not TRACK_BY_KEY[key].require_above_cloud
+
+
+def test_entry_ok_adds_the_cloud_condition_only_where_configured():
+    points = compute_ichimoku(_candles([100.0] * 60 + [130.0] * 30))
+    crossings = [i for i in range(1, len(points)) if golden_cross(points, i)]
+    assert crossings
+    for i in crossings:
+        assert entry_ok(points, i, TRACK_BY_KEY[ULTRA])  # 구름 조건 없음
+        assert entry_ok(points, i, TRACK_BY_KEY[LONG]) == above_cloud(points[i])

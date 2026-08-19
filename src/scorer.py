@@ -16,9 +16,10 @@ from src.tracks import (
     MIN_HIT_RATE as TRACK_MIN_HIT_RATE,
     TRACKS,
     EntryContext,
+    SimSeries,
     TrackSpec,
-    cloud_breakout,
     compute_track_stats,
+    entry_ok,
     latest_entry,
 )
 
@@ -120,9 +121,20 @@ def _entry_context(data_store: DataStore, market: str, candles: list, btc_cloud)
     return EntryContext(btc_cloud=btc_cloud, rsi=compute_rsi(candles))
 
 
+def _sim_series(data_store: DataStore, market: str, timeframe: str, cache: dict | None) -> SimSeries:
+    """BR27 판정봉. 네 트랙이 같은 판정봉(30분)을 쓰므로 캐시가 없으면 네 번 다시 만든다."""
+    key = ("sim", market, timeframe)
+    if cache is not None and key in cache:
+        return cache[key]
+    value = SimSeries.build(data_store.get_candles(SOURCE, market, timeframe))
+    if cache is not None:
+        cache[key] = value
+    return value
+
+
 def _candles_and_points(data_store: DataStore, market: str, timeframe: str, cache: dict | None):
-    """일목 계산은 봉 수에 비례해 비싸다. 4시간봉 트랙이 3개(초단기·단기·장기)라 캐시가 없으면
-    같은 종목의 같은 봉을 세 번 계산한다."""
+    """일목 계산은 봉 수에 비례해 비싸다. 네 트랙이 모두 4시간봉 진입이라 캐시가 없으면
+    같은 종목의 같은 봉을 네 번 계산한다."""
     key = (market, timeframe)
     if cache is not None and key in cache:
         return cache[key]
@@ -151,16 +163,17 @@ def generate_track_recommendations(
     recommendations = []
     for market in candidates:
         candles, points = _candles_and_points(data_store, market, spec.timeframe, candle_cache)
-        if not points or not cloud_breakout(points, len(points) - 1):
-            # 최신봉이 돌파가 아니면 RSI·일봉 시계열을 만들 이유가 없다. 대부분의 종목이 여기서
-            # 걸러지므로 이 순서가 실행 시간을 좌우한다(실측 184초 -> 수 초).
+        if not points or not entry_ok(points, len(points) - 1, spec):
+            # 최신봉이 골든크로스가 아니면 RSI·판정봉을 만들 이유가 없다. 대부분의 종목이 여기서
+            # 걸러지므로 이 순서가 실행 시간을 좌우한다.
             continue
         context = _entry_context(data_store, market, candles, btc_cloud)
-        index = latest_entry(candles, points, context)
+        index = latest_entry(candles, points, spec, context)
         if index is None:
             continue
 
-        stats = compute_track_stats(candles, points, spec, context)
+        sim = _sim_series(data_store, market, spec.sim_timeframe, candle_cache)
+        stats = compute_track_stats(candles, points, spec, sim, context)
         if stats["n"] < spec.min_samples or stats["hit_rate"] is None:
             continue
         if stats["hit_rate"] < TRACK_MIN_HIT_RATE:
