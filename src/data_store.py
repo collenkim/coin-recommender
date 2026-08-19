@@ -320,6 +320,19 @@ class DataStore:
                 (source, market, timeframe, earliest.isoformat(), checked_at.isoformat()),
             )
 
+    def get_announced_entries(self, since: datetime) -> set[tuple[str, str, str]]:
+        """BR31: 이미 알린 (종목, 트랙, 진입봉 마감시각) 조합.
+
+        진입 신호는 **4시간봉 하나**를 가리키는데 파이프라인은 그보다 자주 돈다. 같은 봉을 매 실행
+        다시 검출하므로, 기록해 두지 않으면 같은 추천이 최대 8회(30분 주기 기준) 반복 발송된다."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT market, track, entry_time FROM recommendations "
+                "WHERE entry_time IS NOT NULL AND entry_time >= ?",
+                (since.isoformat(),),
+            ).fetchall()
+        return {(market, track or "regime", entry_time) for market, track, entry_time in rows}
+
     def upsert_candles(self, source: Source, market: str, timeframe: str, candles: list[Candle]) -> int:
         if not candles:
             return 0

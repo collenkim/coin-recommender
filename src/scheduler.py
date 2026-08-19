@@ -32,7 +32,13 @@ def _run_monitor_job() -> None:
 
 
 def start_scheduler(app: FastAPI) -> BackgroundScheduler:
-    """FR12: hourly, 5 minutes past the hour (waits for the 1h candle to close).
+    """BR31: 30분마다 (매시 5분/35분). 봉 마감 직후 5분을 두고 도는 것은 그대로다.
+
+    **주기를 줄여도 진입 검출이 빨라지지는 않는다** -- 진입 신호는 4시간봉이 마감돼야 생기고,
+    마감 후 5분이면 이미 최단 지연이다. 30분 주기의 실효는 (1) 파이프라인이 실패하거나 지연됐을
+    때 다음 시도까지의 공백이 절반으로 줄고, (2) 30분·1시간봉 수집이 더 촘촘해지는 것이다.
+    같은 진입봉이 반복 검출되는 문제는 BR31 중복 억제가 담당한다.
+
     coalesce+misfire_grace_time avoid piling up missed runs after downtime (NFR Design).
 
     BR22: 가격 감시는 5분마다 따로 돈다. 활성 추천이 없으면 조회 없이 즉시 끝나므로
@@ -40,7 +46,7 @@ def start_scheduler(app: FastAPI) -> BackgroundScheduler:
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         _run_job,
-        trigger=CronTrigger(minute=5),
+        trigger=CronTrigger(minute="5,35"),
         id=_JOB_ID,
         coalesce=True,
         misfire_grace_time=settings.scheduler_misfire_grace_seconds,

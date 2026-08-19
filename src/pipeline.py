@@ -22,6 +22,8 @@ from src.scorer import (
 from src.tracks import COLLECTED_TIMEFRAMES, TRACKS
 
 _EVALUATION_WINDOW_HOURS = 24
+# BR31: 중복 알림 억제 조회 범위. 가장 긴 트랙 보유(7일)보다 넉넉해야 같은 진입봉이 다시 알려지지 않는다.
+_ANNOUNCE_MEMORY_DAYS = 10
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +138,18 @@ def _collect_and_store_binance(
             logger.warning("Failed to collect Binance %s %s; skipping this market/timeframe this run", symbol, timeframe, exc_info=True)
 
 
+def _drop_already_announced(recommendations: list, announced: set) -> list:
+    """이미 알린 (종목, 트랙, 진입봉) 조합을 제거한다."""
+    result = []
+    for r in recommendations:
+        entry_time = getattr(r, "entry_time", None)
+        key = (r.market, getattr(r, "track", "regime"), entry_time.isoformat() if entry_time else None)
+        if key in announced:
+            continue
+        result.append(r)
+    return result
+
+
 def run_price_monitor(data_store: DataStore | None = None) -> list:
     """BR22: 활성 추천의 진입가/매도가/손절가 도달을 확인하고, 새로 발생한 것만 알린다.
 
@@ -217,11 +231,18 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
         recommendations = generate_recommendations(candidates, store)[: settings.recommendations_per_exchange]
         tracks = generate_all_tracks(track_candidates, store, phase, settings.recommendations_per_exchange)
 
+        # BR31: 같은 진입봉을 이미 알렸으면 다시 알리지 않는다. 진입 신호는 4시간봉 하나를
+        # 가리키는데 파이프라인은 30분마다 돌므로, 억제가 없으면 같은 추천이 8회 발송된다.
+        # 저장은 그대로 하되(회차 기록은 남아야 한다) 알림에서만 걸러낸다.
+        announced = store.get_announced_entries(now - timedelta(days=_ANNOUNCE_MEMORY_DAYS))
+        fresh_recommendations = _drop_already_announced(recommendations, announced)
+        fresh_tracks = {key: _drop_already_announced(items, announced) for key, items in tracks.items()}
+
         store.save_run(now, regime is not None, recommendations + [r for v in tracks.values() for r in v])
 
         try:
             send_notification(
-                recommendations,
+                fresh_recommendations,
                 now,
                 settings.telegram_bot_token,
                 settings.telegram_chat_id,
@@ -229,7 +250,7 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
                 settings.slack_webhook_url,
                 timeout_seconds=settings.http_timeout_seconds,
                 phase=phase,
-                tracks=tracks,
+                tracks=fresh_tracks,
                 now=now,
             )
         except Exception:

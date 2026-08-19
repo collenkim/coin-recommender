@@ -1727,3 +1727,28 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: 진단. 15분봉 9년 확보의 목적(공정 비교)은 달성.
 
 ---
+## Diagnostic Request (2026-08-19): 상승장인데 골든크로스 0건이 말이 되는가
+**Timestamp**: 2026-08-19T15:40:00Z
+**User Input**: "Using AI-DLC 지금 상승장인데 골든 크로스 상태가 단 한개도 없다는게 말이되?"
+**AI Response**: "골든크로스 상태(전환선>기준선 유지)"와 "골든크로스 발생(교차한 그 봉)"을 구분해 실측. 현행 `latest_entry`는 **가장 최근 마감 4시간봉이 교차 봉일 때만** 진입으로 본다.
+**Context**: 진단.
+
+---
+## Follow-up Request (2026-08-19): 추천 주기 30분
+**Timestamp**: 2026-08-19T16:10:00Z
+**User Input**: "Using AI-DLC 추천 주기는 30분마다로 할꼐. 30분 단위로도 검출될 수 있지 않나 그러면. 하루에 3회라고하면 3번정도는 수익볼 확률이 있다는거잖아.  30분 주기로 검증해야 좀 더 빨리 캐치하지."
+**AI Response**: 주기 단축 전 **중복 발송 구조 검증 선행** -- 진입봉이 4시간이므로 같은 신호가 주기마다 반복 검출될 수 있다.
+**Context**: Requirements Analysis.
+
+---
+## Code Generation (2026-08-19): BR31 주기 30분 + 중복 억제
+**Timestamp**: 2026-08-19T16:40:00Z
+**AI Response**:
+**1. 중복 발송 구조 발견(주기 단축의 전제).** 진입 신호는 4시간봉 하나를 가리키는데 파이프라인은 더 자주 돈다. 실측 재현 결과 08-18 16:05~19:35 **8회 실행 전부에서 같은 XRP 신호가 검출**됐다. 시간당 실행에서도 이미 4회 중복 구조였다.
+**2. 억제 구현.** `recommendations`의 (market, track, entry_time)을 조회해 이미 알린 조합은 알림에서 제외. 저장은 유지(회차 기록 필요). 조회 범위 10일. **검증: 검출 8회 -> 알림 1회.**
+**3. 주기 30분 적용.** `CronTrigger(minute="5,35")`.
+**사용자 기대와의 차이 명시**: "30분 주기로 검증해야 좀 더 빨리 캐치"라고 하셨으나 **진입 검출은 빨라지지 않는다** -- 진입 신호는 4시간봉 마감 후에야 생기고 마감 +5분이 이미 최단 지연이다. 30분 주기의 실효는 (1) 실패·지연 시 공백 절반 (2) 30분/1시간봉 수집 촘촘해짐. 진입을 실제로 빠르게 하려면 진입봉을 30분으로 내려야 하는데 실측상 기대수익 -0.00%(4시간봉 +0.15%)로 크게 열등해 채택하지 않았다.
+**Files Modified**: `src/scheduler.py`, `src/pipeline.py`(`_drop_already_announced`), `src/data_store.py`(`get_announced_entries`), `tests/test_pipeline.py`(3건 추가). 230/230 통과.
+**Context**: Code Generation.
+
+---

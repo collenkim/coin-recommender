@@ -379,3 +379,71 @@ def test_incremental_catches_up_across_a_long_gap(tmp_path):
     # 단발 조회가 아니라 페이지네이션 경로를 써야 한다
     mock_binance.get_klines_since.assert_called_once()
     mock_binance.get_klines.assert_not_called()
+
+
+def test_already_announced_entries_are_not_notified_again(tmp_path):
+    """BR31: 진입 신호는 4시간봉 하나를 가리키는데 파이프라인은 30분마다 돈다.
+    억제가 없으면 같은 추천이 최대 8회 발송된다(실측 확인)."""
+    from src.data_store import DataStore
+    from src.pipeline import _drop_already_announced
+
+    store = DataStore(str(tmp_path / "d.db"))
+    entry = datetime(2026, 8, 18, 16, tzinfo=timezone.utc)
+
+    class R:
+        market = "XRPUSDT"
+        expected_return = 0.01
+        n = 100
+        hit_count = 30
+        source = "binance"
+        entry_price = 1.0
+        max_drawdown = -0.01
+        track = "ultra"
+        entry_time = entry
+
+    store.save_run(datetime.now(timezone.utc), True, [R()])
+    announced = store.get_announced_entries(datetime.now(timezone.utc) - timedelta(days=10))
+
+    assert (R.market, "ultra", entry.isoformat()) in announced
+    assert _drop_already_announced([R()], announced) == []
+
+
+def test_a_new_entry_bar_is_still_notified(tmp_path):
+    """억제는 '같은 진입봉'에만 걸려야 한다 -- 다음 교차는 정상 발송되어야 한다."""
+    from src.data_store import DataStore
+    from src.pipeline import _drop_already_announced
+
+    store = DataStore(str(tmp_path / "d.db"))
+
+    class R:
+        market = "XRPUSDT"
+        expected_return = 0.01
+        n = 100
+        hit_count = 30
+        source = "binance"
+        entry_price = 1.0
+        max_drawdown = -0.01
+        track = "ultra"
+        entry_time = datetime(2026, 8, 18, 16, tzinfo=timezone.utc)
+
+    store.save_run(datetime.now(timezone.utc), True, [R()])
+    announced = store.get_announced_entries(datetime.now(timezone.utc) - timedelta(days=10))
+
+    class Next(R):
+        entry_time = datetime(2026, 8, 18, 20, tzinfo=timezone.utc)  # 다음 4시간봉
+
+    assert len(_drop_already_announced([Next()], announced)) == 1
+
+
+def test_scheduler_runs_every_30_minutes():
+    from src.scheduler import _JOB_ID, start_scheduler, stop_scheduler
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    scheduler = start_scheduler(app)
+    try:
+        job = scheduler.get_job(_JOB_ID)
+        minute = next(f for f in job.trigger.fields if f.name == "minute")
+        assert str(minute) == "5,35"
+    finally:
+        stop_scheduler(app)
