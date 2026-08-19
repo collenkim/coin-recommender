@@ -257,7 +257,10 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
         fresh_recommendations = _drop_already_announced(recommendations, announced)
         fresh_tracks = {key: _drop_already_announced(items, announced) for key, items in tracks.items()}
 
-        store.save_run(now, regime is not None, recommendations + [r for v in tracks.values() for r in v])
+        # BR37: **알린 것만 저장한다.** 이전에는 중복도 저장해 같은 4시간봉 진입이 30분마다
+        # 쌓였고(실측 원시 118행 = 고유 진입 17건), 실적 집계가 7배 부풀 뻔했다. 회차 기록은
+        # `pipeline_runs`가 담당하므로 중복 행은 아무것도 더해주지 않는다.
+        store.save_run(now, regime is not None, fresh_recommendations + [r for v in fresh_tracks.values() for r in v])
 
         try:
             send_notification(
@@ -272,6 +275,7 @@ def run_recommendation_pipeline(data_store: DataStore | None = None) -> Pipeline
                 tracks=fresh_tracks,
                 now=now,
                 premium=premium,
+                performance=store.get_live_performance(),
             )
         except Exception:
             logger.warning("Notification step failed; pipeline run is still considered successful", exc_info=True)

@@ -294,6 +294,13 @@ class DataStore:
                     if "duplicate column name" not in str(exc):
                         raise
             self._widen_recommendations_primary_key(conn)
+            # BR37: (종목, 트랙, 진입봉)이 곧 하나의 추천이다. 파이프라인이 30분마다 돌면서 같은
+            # 4시간봉 진입을 반복 저장한 이력이 있어(원시 118행 = 고유 진입 17건) DB 레벨에서도
+            # 막는다. INSERT는 `OR IGNORE`이므로 중복은 예외가 아니라 조용히 무시된다.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendations_entry "
+                "ON recommendations (market, track, entry_time)"
+            )
 
     @staticmethod
     def _widen_recommendations_primary_key(conn) -> None:
@@ -474,7 +481,7 @@ class DataStore:
             )
             if rows:
                 conn.executemany(
-                    "INSERT INTO recommendations (run_time, market, expected_return, n, hit_count, source, "
+                    "INSERT OR IGNORE INTO recommendations (run_time, market, expected_return, n, hit_count, source, "
                     "entry_time, entry_price, max_drawdown, track) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                 )
@@ -516,6 +523,37 @@ class DataStore:
                     )
                 )
         return runs
+
+    def get_live_performance(self) -> dict:
+        """BR37: **실제 발송한 추천**의 성적. 백테스트 확률과 별개다.
+
+        (종목, 트랙, 진입봉)으로 중복을 제거한다 -- 파이프라인이 30분마다 돌면서 같은 4시간봉
+        진입을 반복 저장하기 때문이다(실측: 원시 118행 = 고유 진입 17건). 중복을 그대로 세면
+        회전이 빠른 종목이 통계를 지배한다.
+
+        결과가 확정된 것(매도가 또는 손절가 도달)만 센다 -- 진행 중인 건을 넣으면 BR24에서 겪은
+        "미완료 매매를 타임아웃으로 집계" 결함이 반복된다."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT track,
+                       MAX(target_hit_at IS NOT NULL) AS hit,
+                       MAX(stop_hit_at IS NOT NULL) AS stopped
+                FROM recommendations
+                WHERE entry_time IS NOT NULL
+                GROUP BY track, market, entry_time
+                """
+            ).fetchall()
+        by_track: dict[str, dict[str, int]] = {}
+        for track, hit, stopped in rows:
+            if not hit and not stopped:
+                continue  # 아직 진행 중
+            stats = by_track.setdefault(track or "regime", {"resolved": 0, "hit": 0})
+            stats["resolved"] += 1
+            stats["hit"] += bool(hit)
+        total = {"resolved": sum(v["resolved"] for v in by_track.values()),
+                 "hit": sum(v["hit"] for v in by_track.values())}
+        return {"by_track": by_track, "total": total}
 
     def get_pending_evaluations(self, older_than: datetime) -> list[tuple[str, datetime, str]]:
         """BR12: (market, run_time, source) triples not yet evaluated, whose 24h window has already closed."""

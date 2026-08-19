@@ -164,8 +164,46 @@ def _premium_lines(premium) -> list[str]:
     ]
 
 
+# BR37: 실적 표본이 이만큼 쌓이기 전에는 확률로 읽지 않도록 문구를 달리한다. 트랙 실측
+# 도달률이 21~36%인데 표본 20건이면 우연히 88%가 나올 수 있다 -- 실제로 첫날 17건에서 88%가 나왔다.
+_PERFORMANCE_MIN_SAMPLES = 30
+
+
+def _performance_lines(performance) -> list[str]:
+    """BR37: **실제 발송한 추천**의 매도가 도달률. 백테스트 확률과 다른 수치다.
+
+    표본이 적을 때 확정된 실력으로 읽히지 않도록 건수를 항상 함께 적고, 하한 미만이면
+    '표본 부족'을 명시한다."""
+    if not performance:
+        return []
+    total = performance.get("total", {})
+    resolved = total.get("resolved", 0)
+    if not resolved:
+        return ["[실적] 아직 결과가 확정된 추천이 없습니다"]
+    rate = total.get("hit", 0) / resolved
+    by = performance.get("by_track", {})
+    parts = []
+    for spec in TRACKS:
+        stats = by.get(spec.key)
+        if not stats or not stats["resolved"]:
+            continue
+        parts.append(f"{spec.label} {stats['hit'] / stats['resolved']:.0%}({stats['resolved']}건)")
+    detail = "  ".join(parts)
+    caveat = "" if resolved >= _PERFORMANCE_MIN_SAMPLES else f" — 표본 {resolved}건, 아직 판단하기 이릅니다"
+    lines = [f"[실적] 매도가 도달 {total.get('hit', 0)}/{resolved}건 = {rate:.0%}{caveat}"]
+    if detail:
+        lines.append(f"· {detail}")
+    return lines
+
+
 def _format_message(
-    run_time: datetime, recommendations: list, phase=None, tracks=None, now=None, premium=None
+    run_time: datetime,
+    recommendations: list,
+    phase=None,
+    tracks=None,
+    now=None,
+    premium=None,
+    performance=None,
 ) -> str:
     """BR5/BR23/BR25: 상단에 총 개수와 시장 국면, 그 아래 트랙별 섹션.
 
@@ -179,6 +217,10 @@ def _format_message(
     phase_block = _phase_lines(phase)
     if phase_block:
         parts.append("\n".join(phase_block))
+
+    performance_block = _performance_lines(performance)
+    if performance_block:
+        parts.append("\n".join(performance_block))
 
     premium_block = _premium_lines(premium)
     if premium_block:
@@ -202,11 +244,12 @@ def send_notification(
     tracks=None,
     now=None,
     premium=None,
+    performance=None,
 ) -> None:
     """BR4: sends to every configured channel independently; a failure on one channel does not
     prevent the others from being attempted. Caller (Pipeline) treats this as best-effort (BR3)."""
     _dispatch(
-        _format_message(run_time, recommendations, phase, tracks, now, premium),
+        _format_message(run_time, recommendations, phase, tracks, now, premium, performance),
         telegram_bot_token,
         telegram_chat_id,
         discord_webhook_url,
