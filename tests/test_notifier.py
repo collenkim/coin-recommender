@@ -385,3 +385,75 @@ def test_price_alert_sends_one_message_for_all_events():
 
     assert mock_post.call_count == 1  # 채널 1개 = 요청 1회
     assert "가격 알림 4건" in mock_post.call_args.kwargs["json"]["content"]
+
+
+# --- BR38: 가격 알림 병합 / 트랙별 비율 표기 ---
+
+def _evt(market, kind, price, track, at=None):
+    e = FakePriceEvent(market, kind, price, at or datetime(2026, 8, 20, 1, tzinfo=UTC))
+    e.track = track
+    return e
+
+
+def test_entry_touch_is_merged_across_tracks():
+    """진입가는 트랙과 무관하게 같은 값(진입봉 종가)이라 여러 번 알릴 이유가 없다."""
+    from src.data_store import ENTRY_TOUCHED
+    from src.notifier import send_price_alert
+
+    events = [_evt("ACEUSDT", ENTRY_TOUCHED, 0.1982, "day"), _evt("ACEUSDT", ENTRY_TOUCHED, 0.1982, "mid")]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_price_alert(events, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert "가격 알림 1건" in message  # 2건 -> 1건으로 병합
+    assert "[단타] [중기] 진입가 도달" in message
+
+
+def test_stop_prices_are_not_merged_because_they_differ():
+    """손절가는 트랙마다 값이 다르므로 합치면 안 된다 (단타 -2%, 중기 -4%)."""
+    from src.data_store import STOP_HIT
+    from src.notifier import send_price_alert
+
+    events = [_evt("ACEUSDT", STOP_HIT, 0.194236, "day"), _evt("ACEUSDT", STOP_HIT, 0.190272, "mid")]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_price_alert(events, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert "가격 알림 2건" in message
+
+
+def test_each_track_shows_its_own_stop_percentage():
+    """BR38 이전에는 기존 트랙 상수(-2%)를 하드코딩해 중기 손절가 0.190272를 '-2%'로 표기했다."""
+    from src.data_store import STOP_HIT
+    from src.notifier import send_price_alert
+
+    events = [_evt("ACEUSDT", STOP_HIT, 0.194236, "day"), _evt("ACEUSDT", STOP_HIT, 0.190272, "mid")]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_price_alert(events, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert "0.194236  (-2%)" in message
+    assert "0.190272  (-4%)" in message
+
+
+def test_each_track_shows_its_own_target_percentage():
+    from src.data_store import TARGET_HIT
+    from src.notifier import send_price_alert
+
+    events = [_evt("SOLUSDT", TARGET_HIT, 78.54, "day"), _evt("SOLUSDT", TARGET_HIT, 84.7, "long")]
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_price_alert(events, RUN_TIME, None, None, "https://discord.example/webhook")
+
+    message = mock_post.call_args.kwargs["json"]["content"]
+    assert "78.54  (+2%)" in message
+    assert "84.7  (+10%)" in message
+
+
+def test_legacy_track_falls_back_to_the_regime_rules():
+    from src.data_store import STOP_HIT
+    from src.notifier import send_price_alert
+
+    with patch("src.notifier.requests.post", return_value=ok_response()) as mock_post:
+        send_price_alert([_evt("OLDUSDT", STOP_HIT, 98.0, "regime")], RUN_TIME, None, None, "https://d.example/w")
+
+    assert "(-2%)" in mock_post.call_args.kwargs["json"]["content"]  # 기존 트랙 STOP_LOSS

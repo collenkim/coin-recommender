@@ -72,24 +72,54 @@ def _recommendation_block(order: int, r) -> str:
 _TRACK_LABELS = {t.key: f"[{t.label}] " for t in TRACKS} | {"regime": "[기존] "}
 
 _EVENT_LABELS = {
-    ENTRY_TOUCHED: ("진입가 도달 (지금 진입 가능)", "진입가", f"기준"),
-    TARGET_HIT: ("매도가 도달", "매도가", f"+{TARGET_RETURN:.0%}"),
-    STOP_HIT: ("손절가 도달", "손절가", f"-{STOP_LOSS:.0%}"),
+    ENTRY_TOUCHED: ("진입가 도달 (지금 진입 가능)", "진입가"),
+    TARGET_HIT: ("매도가 도달", "매도가"),
+    STOP_HIT: ("손절가 도달", "손절가"),
 }
+
+
+def _event_note(kind: str, track: str) -> str:
+    """BR38: 목표·손절 비율은 **트랙마다 다르다**. 이전에는 기존 레짐 트랙의 상수
+    (+3%/-2%)를 하드코딩해, 중기 손절가 0.190272(-4%)를 "-2%"로 표기했다."""
+    if kind == ENTRY_TOUCHED:
+        return "기준"
+    spec = TRACK_BY_KEY.get(track)
+    target, stop = (spec.target, spec.stop) if spec else (TARGET_RETURN, STOP_LOSS)
+    return f"+{target:.0%}" if kind == TARGET_HIT else f"-{stop:.0%}"
+
+
+def _merge_events(events: list) -> list[tuple]:
+    """BR38: **같은 가격을 가리키는 알림은 하나로 합친다.**
+
+    진입가는 트랙과 무관하게 같은 값(진입봉 종가)이라, 트랙마다 따로 알리면 같은 내용이
+    2~3번 반복된다. 목표·손절은 트랙마다 값이 다르므로 합치지 않는다.
+
+    반환: (종목, 종류, 가격, 도달시각, [트랙...])"""
+    merged: dict = {}
+    for event in events:
+        track = getattr(event, "track", "regime")
+        key = (event.market, event.kind, round(event.price, 12))
+        if key not in merged:
+            merged[key] = [event.market, event.kind, event.price, event.at, []]
+        if track not in merged[key][4]:
+            merged[key][4].append(track)
+    return [tuple(v) for v in merged.values()]
 
 
 def _format_price_alert(now: datetime, events: list) -> str:
     """BR22: 도달 알림도 추천 알림과 같은 형식 규칙 -- 상단에 건수, 종목마다 번호 붙인 단락."""
-    header = f"[coin-recommender] 가격 알림 {len(events)}건\n{_kst(now, '%Y-%m-%d %H:%M')} KST"
+    merged = _merge_events(events)
+    header = f"[coin-recommender] 가격 알림 {len(merged)}건\n{_kst(now, '%Y-%m-%d %H:%M')} KST"
     blocks = []
-    for order, event in enumerate(events, 1):
-        title, price_label, note = _EVENT_LABELS[event.kind]
+    for order, (market, kind, price, at, tracks) in enumerate(merged, 1):
+        title, price_label = _EVENT_LABELS[kind]
+        labels = "".join(_TRACK_LABELS.get(t, "") for t in tracks)
         blocks.append(
             "\n".join(
                 [
-                    f"({order}) {event.market} · {_TRACK_LABELS.get(getattr(event, 'track', 'regime'), '')}{title}",
-                    f"· {price_label}: {event.price:,.6g}  ({note})",
-                    f"· 도달 시각: {_kst(event.at)} KST",
+                    f"({order}) {market} · {labels}{title}",
+                    f"· {price_label}: {price:,.6g}  ({_event_note(kind, tracks[0])})",
+                    f"· 도달 시각: {_kst(at)} KST",
                 ]
             )
         )

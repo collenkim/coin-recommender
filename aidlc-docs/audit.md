@@ -1904,3 +1904,20 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: 데이터 정리.
 
 ---
+## Follow-up Request (2026-08-20): 가격 알림 중복·손절가 표기 오류
+**Timestamp**: 2026-08-20T02:40:00Z
+**User Input**: "Using AI-DLC 가격 알림이 지금 4건이 나오는게 문제가 있어보여. 진입가 [단타] [중기] 다 동일한테 여러번 구분할필요가 없잖아? 손절가는 중기랑 단기랑 다른데 같이 2% 표기된건 뭐야?"
+**AI Response**: 두 건 모두 결함으로 확인 예정. (1) 진입가는 트랙과 무관하게 동일한데 트랙마다 따로 알림, (2) `_EVENT_LABELS`가 기존 트랙 상수(TARGET_RETURN/STOP_LOSS)를 하드코딩해 트랙별 목표·손절이 잘못 표기.
+**Context**: 진단 -> 수정.
+
+---
+## Code Generation (2026-08-20): BR38 가격 알림 수정
+**Timestamp**: 2026-08-20T03:00:00Z
+**AI Response**: 사용자 지적 2건 모두 실제 결함으로 확인·수정.
+**1. 트랙별 비율 표기 오류**: `_EVENT_LABELS`가 모듈 로드 시점에 기존 트랙 상수(TARGET_RETURN 3% / STOP_LOSS 2%)로 문자열을 만들어 둬, 중기 손절가 0.190272(실제 -4%)를 **"-2%"로 표기**했다. **가격 계산은 맞았고 표기만 틀렸다** -- BR32에서 트랙별 손절을 도입할 때 이 상수만 따라가지 못했다. `_event_note(kind, track)`로 트랙 스펙에서 비율을 가져오도록 수정(스펙에 없는 `regime`은 기존 상수로 폴백).
+**2. 진입가 알림 중복**: 진입가는 트랙과 무관하게 동일(진입봉 종가)한데 트랙별 행이 나뉘어 같은 내용이 2~3번 발송됐다. `_merge_events`로 (종목, 종류, 가격)이 같으면 병합하고 트랙을 함께 표시. 목표·손절은 값이 달라 자연히 병합되지 않는다.
+**결과**: 사용자 사례가 4건 -> 3건으로 줄고 손절 비율이 -2%/-4%로 정확해짐.
+**Files Modified**: `src/notifier.py`, `tests/test_notifier.py`(5건 추가). 266/266 통과.
+**Context**: Code Generation.
+
+---
