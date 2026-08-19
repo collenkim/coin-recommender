@@ -125,6 +125,19 @@ class MonitoredRecommendation:
     track: str = "regime"
 
 
+# BR28: 거래소가 줄 수 있는 가장 오래된 봉. 한 번 확인하면 바뀌지 않는 값이므로 캐시한다 --
+# 매 실행마다 조합당 1요청(30종 x 7봉 = 210요청/시간)을 아낀다.
+_COLLECTION_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS collection_state (
+    source TEXT NOT NULL,
+    market TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    exchange_earliest TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (source, market, timeframe)
+);
+"""
+
 _RUNS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     run_time TEXT PRIMARY KEY,
@@ -260,6 +273,7 @@ class DataStore:
         with self._connect() as conn:
             for table in _TABLE_BY_SOURCE.values():
                 conn.execute(_SCHEMA.format(table=table))
+            conn.execute(_COLLECTION_STATE_SCHEMA)
             conn.execute(_RUNS_SCHEMA)
             conn.execute(_RECOMMENDATIONS_SCHEMA)
             for column, col_type in _RECOMMENDATIONS_OUTCOME_COLUMNS:
@@ -286,6 +300,25 @@ class DataStore:
         )
         conn.execute("DROP TABLE recommendations")
         conn.execute("ALTER TABLE recommendations_new RENAME TO recommendations")
+
+    def get_exchange_earliest(self, source: Source, market: str, timeframe: str) -> datetime | None:
+        """BR28: 캐시된 '거래소 최초봉' 시각. 없으면 None (조회해서 채워야 함)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT exchange_earliest FROM collection_state WHERE source = ? AND market = ? AND timeframe = ?",
+                (source, market, timeframe),
+            ).fetchone()
+        return None if row is None else datetime.fromisoformat(row[0])
+
+    def set_exchange_earliest(
+        self, source: Source, market: str, timeframe: str, earliest: datetime, checked_at: datetime
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO collection_state "
+                "(source, market, timeframe, exchange_earliest, checked_at) VALUES (?, ?, ?, ?, ?)",
+                (source, market, timeframe, earliest.isoformat(), checked_at.isoformat()),
+            )
 
     def upsert_candles(self, source: Source, market: str, timeframe: str, candles: list[Candle]) -> int:
         if not candles:

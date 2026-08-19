@@ -1655,3 +1655,20 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Code Generation.
 
 ---
+## Follow-up Request (2026-08-19): 9년치 확보 + 반복 요청 축소
+**Timestamp**: 2026-08-19T12:00:00Z
+**User Input**: "Using AI-DLC 9년치 데이터를 확보해주고, DB에 저장해서 매번 전체 요청하는 빈도를 줄여줘. 그럴 경우 DB 사이즈가 커지나."
+**AI Response**: 현재 커버리지·요청 횟수 측정 후 개선.
+**Context**: Requirements Analysis.
+
+---
+## Code Generation (2026-08-19): BR28 거래소 최초봉 캐시
+**Timestamp**: 2026-08-19T12:40:00Z
+**AI Response**:
+**1. 9년치 확보 -- 이미 완료 상태였음.** 후보 30종 전부 상장일까지 확보(미확보 0종). 평균 보유가 2.6~3.3년인 것은 **최근 상장 종목이 많아서**이지 설정 제약이 아니다. 9년은 BNB(8.8년)·ADA/XRP(8.3년) 같은 오래된 종목만 가능하고 2025~2026 상장 종목은 구조적으로 불가능하다. 유일한 인위적 제한은 15분봉 2년 상한인데 어느 트랙도 쓰지 않는다.
+**2. 반복 요청 절반으로.** 조합(종목x봉)당 매번 2요청(최초봉 확인 + 증분)을 쓰고 있었다 -- 30종x7봉이면 시간당 424요청. 거래소 최초봉은 바뀌지 않는 값이므로 `collection_state` 테이블에 캐시. **실측 405요청/37초 -> 210요청/18초.**
+**3. DB 크기 답변.** 현재 779MB/531만 봉(봉당 147바이트). 캐시 테이블 자체는 210행으로 무시할 수준. 15분봉을 9년으로 늘리면 +0.89GB -> 1.67GB가 되지만 **쓰는 트랙이 없어 상한 유지**.
+**Files Modified**: `src/data_store.py`(collection_state 테이블 + get/set_exchange_earliest), `src/pipeline.py`(캐시 우선 조회), `tests/test_pipeline.py`(회귀 2건 추가). 224/224 통과.
+**Context**: Code Generation.
+
+---

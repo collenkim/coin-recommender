@@ -159,6 +159,7 @@ def test_binance_collection_backfills_when_stored_history_is_shallower_than_look
     incremental path only ever moves forward."""
     mock_store = MagicMock()
     mock_store.get_first_candle_time.return_value = datetime.now(timezone.utc) - timedelta(days=10)
+    mock_store.get_exchange_earliest.return_value = None  # 캐시 미보유 -> 조회
     mock_binance = MagicMock()
     # 거래소는 훨씬 오래된 봉을 갖고 있다 -- 아직 받을 과거가 남았으므로 백필해야 한다.
     mock_binance.get_klines.return_value = _earliest_probe(datetime.now(timezone.utc) - timedelta(days=2000))
@@ -177,6 +178,7 @@ def test_binance_collection_stops_refetching_once_it_holds_the_exchange_earliest
     stored_first = datetime(2017, 11, 6, tzinfo=timezone.utc)
     mock_store = MagicMock()
     mock_store.get_first_candle_time.return_value = stored_first
+    mock_store.get_exchange_earliest.return_value = None  # 캐시 미보유 -> 조회
     mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(hours=2)
     mock_binance = MagicMock()
     mock_binance.get_klines.return_value = _earliest_probe(stored_first)
@@ -192,6 +194,7 @@ def test_binance_collection_backfills_when_the_earliest_probe_fails():
     """판단이 불가능하면 백필로 떨어진다 -- 잘못 건너뛰어 이력이 비는 것보다 한 번 더 받는 게 낫다."""
     mock_store = MagicMock()
     mock_store.get_first_candle_time.return_value = datetime(2017, 11, 6, tzinfo=timezone.utc)
+    mock_store.get_exchange_earliest.return_value = None  # 캐시 미보유 -> 조회 시도 -> 실패
     mock_binance = MagicMock()
     mock_binance.get_klines.side_effect = RuntimeError("probe failed")
 
@@ -273,3 +276,40 @@ def test_evaluate_pending_outcomes_isolates_per_item_failure():
         evaluate_pending_outcomes(mock_store, now)  # should not raise
 
     mock_store.record_outcome.assert_called_once_with(fake_outcome)
+
+
+def test_earliest_probe_is_cached_so_later_runs_skip_the_request(tmp_path):
+    """BR28: 거래소 최초봉은 바뀌지 않는 값이다. 캐시가 있으면 조회 없이 증분으로 간다 --
+    30종 x 7봉이면 매 실행 210요청이 줄어든다."""
+    from src.data_store import DataStore
+    from src.pipeline import _collect_and_store_binance
+
+    store = DataStore(str(tmp_path / "c.db"))
+    stored_first = datetime(2017, 11, 6, tzinfo=timezone.utc)
+    store.set_exchange_earliest("binance", "SOLUSDT", "1h", stored_first, datetime.now(timezone.utc))
+
+    spy = MagicMock()
+    spy.get_first_candle_time = MagicMock(return_value=stored_first)
+    spy.get_last_candle_time = MagicMock(return_value=datetime.now(timezone.utc) - timedelta(hours=2))
+    spy.get_exchange_earliest = store.get_exchange_earliest
+    spy.set_exchange_earliest = store.set_exchange_earliest
+
+    mock_binance = MagicMock()
+    mock_binance.get_klines.return_value = []
+
+    _collect_and_store_binance(spy, mock_binance, "SOLUSDT", timeframes=("1h",))
+
+    # 증분 조회 1회만 -- 최초봉 확인용 추가 요청이 없다
+    assert mock_binance.get_klines.call_count == 1
+    assert mock_binance.get_klines.call_args.kwargs.get("limit") == 1000
+    mock_binance.get_klines_since.assert_not_called()
+
+
+def test_exchange_earliest_round_trips_through_the_store(tmp_path):
+    from src.data_store import DataStore
+
+    store = DataStore(str(tmp_path / "c.db"))
+    assert store.get_exchange_earliest("binance", "SOLUSDT", "4h") is None
+    moment = datetime(2020, 8, 11, tzinfo=timezone.utc)
+    store.set_exchange_earliest("binance", "SOLUSDT", "4h", moment, datetime.now(timezone.utc))
+    assert store.get_exchange_earliest("binance", "SOLUSDT", "4h") == moment

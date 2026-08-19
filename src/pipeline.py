@@ -45,18 +45,31 @@ _EXCHANGE_EPOCH = datetime(2017, 1, 1, tzinfo=timezone.utc)  # 바이낸스 개�
 
 
 def _is_exchange_earliest(
-    binance_client: BinanceClient, symbol: str, timeframe: str, first_time: datetime
+    data_store: DataStore,
+    binance_client: BinanceClient,
+    symbol: str,
+    timeframe: str,
+    first_time: datetime,
 ) -> bool:
     """보유 중인 최초봉이 거래소가 줄 수 있는 최초봉인가 (= 더 받을 과거가 없는가).
 
+    BR28: 거래소 최초봉은 **한 번 확인하면 바뀌지 않는 값**이므로 DB에 캐시한다. 캐시가 없을 때만
+    1요청을 쓴다 -- 30종 x 7봉이면 매 실행 210요청을 아낀다(시간당 424 -> 214).
+
     실패하면 False를 돌려 기존 백필 경로로 떨어진다 -- 이 판단이 틀려서 수집을 건너뛰는 것보다
     한 번 더 받는 쪽이 안전하다."""
+    cached = data_store.get_exchange_earliest(SOURCE, symbol, timeframe)
+    if cached is not None:
+        return cached >= first_time
     try:
         earliest = binance_client.get_klines(symbol, timeframe, start_time=_EXCHANGE_EPOCH, limit=1)
     except Exception:
         logger.warning("Failed to probe earliest candle for %s %s; falling back to backfill", symbol, timeframe, exc_info=True)
         return False
-    return bool(earliest) and earliest[0].candle_time >= first_time
+    if not earliest:
+        return False
+    data_store.set_exchange_earliest(SOURCE, symbol, timeframe, earliest[0].candle_time, datetime.now(timezone.utc))
+    return earliest[0].candle_time >= first_time
 
 
 def _collect_and_store_binance(
@@ -90,7 +103,7 @@ def _collect_and_store_binance(
         try:
             first_time = data_store.get_first_candle_time(SOURCE, symbol, timeframe)
             if first_time is not None and first_time > target_start and _is_exchange_earliest(
-                binance_client, symbol, timeframe, first_time
+                data_store, binance_client, symbol, timeframe, first_time
             ):
                 # 거래소의 첫 봉을 이미 보유 -- target_start까지 못 미쳐도 그건 상장 전이라 없는 것이다.
                 first_time = target_start
