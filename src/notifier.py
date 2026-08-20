@@ -1,6 +1,6 @@
 import logging
-import math
 from datetime import datetime, timedelta, timezone
+from decimal import ROUND_FLOOR, Decimal
 
 import requests
 
@@ -25,21 +25,30 @@ def _kst(moment: datetime, fmt: str = "%m-%d %H:%M") -> str:
     return moment.astimezone(_KST).strftime(fmt)
 
 
+# BR42: 바이낸스 USDT 현물의 호가 단위는 종목마다 다르고(실측 484종: 0~8자리) 가장 잘게
+# 쪼개는 종목이 8자리다. 표기는 그 최대치에서 자른다.
+_PRICE_STEP = Decimal("1e-8")
+
+
 def _price(value: float | None) -> str:
-    """BR42: 가격 표기.
+    """BR42: 가격 표기 — 소수 8자리에서 **내림**.
 
-    `%g`는 값이 작아지면 **지수 표기로 넘어간다** -- 실제로 PEPE 매도가가 `3.157e-06`으로
-    발송됐다. 그렇다고 소수 자릿수를 고정할 수도 없다: 6자리로 반올림하면 PEPE 진입가
-    0.00000287과 매도가 0.00000316이 **둘 다 `0.000003`**이 되어 구분 자체가 사라진다.
+    `%g`는 값이 작아지면 지수 표기로 넘어가 PEPE 매도가를 `3.157e-06`으로 발송했다. 그렇다고
+    자릿수를 짧게 고정할 수도 없다: 6자리로 반올림하면 PEPE 진입가 0.00000287과 매도가
+    0.00000316이 **둘 다 `0.000003`**이 되어 구분 자체가 사라진다.
 
-    그래서 **유효숫자 5자리**를 소수 표기로 풀고 꼬리 0을 뗀다(최소 2자리, 최대 8자리).
-    진입가는 거래소가 준 값 그대로이므로 이 규칙이 바이낸스 호가 단위를 그대로 복원한다."""
+    자르기 전에 유효숫자 10자리로 한 번 정리한다. 목표·손절가는 곱셈으로 만들어져 부동소수점
+    오차를 달고 있어서다 -- `6.56 * 1.02`는 6.6911999999999995이고, 이대로 8자리에서 내리면
+    `6.69119999`가 되어 고치기 전보다 더 깨져 보인다.
+
+    내림을 쓰는 이유: 매도가는 표시값이 실제 목표보다 높으면 그 지정가가 체결되지 않는다.
+    """
     if value is None:
         return "-"
     if value <= 0:
         return f"{value:,.2f}"
-    decimals = min(8, max(2, 5 - int(math.floor(math.log10(value))) - 1))
-    whole, _, frac = f"{value:,.{decimals}f}".partition(".")
+    stepped = Decimal(f"{value:.10g}").quantize(_PRICE_STEP, rounding=ROUND_FLOOR)
+    whole, _, frac = f"{stepped:,f}".partition(".")
     return f"{whole}.{frac.rstrip('0').ljust(2, '0')}"
 
 

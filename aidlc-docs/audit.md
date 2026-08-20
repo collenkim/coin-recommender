@@ -1969,3 +1969,19 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Verification — 데이터 무결성 확인
 
 ---
+
+## Requirements Analysis — 바이낸스 가격 소수 자릿수 조사
+**Timestamp**: 2026-08-20T04:00:00Z
+**User Input**: "Using AI-DLC 바이낸스는 소수점 몇자리까지 제공해??"
+**AI Response**: `exchangeInfo`의 `PRICE_FILTER.tickSize` 전수 조사로 회신 — USDT 현물 484종 기준 종목마다 다르며 0~8자리, 분포는 4자리 152종 / 5자리 127 / 2자리 95 / 3자리 59 / 6자리 32 / 8자리 11 / 7자리 4 / 1자리 3 / 0자리 1. 조사 중 결함 발견: BR42의 유효숫자 5자리 규칙이 진입가는 정확히 재현하나(거래소가 준 값이므로), **파생값인 매도가·손절가는 30종 중 22종에서 호가 단위보다 1~2자리 길어 그 가격으로 주문을 넣을 수 없음**(예: SOL 매도가 89.649, 호가 단위 0.01). 종목별 tickSize로 반올림하는 후속 수정을 제안하고 사용자 승인 대기.
+**Context**: Inception / Requirements Analysis — 표기 정밀도 조사 및 후속 결함 보고
+
+---
+
+## Construction — Code Generation (BR42 개정: 8자리 내림)
+**Timestamp**: 2026-08-20T04:30:00Z
+**User Input**: "Using AI-DLC 소수점 8자리에서 내림으로 처리해줘 그러면"
+**AI Response**: 요청대로 소수 8자리 내림으로 변경. 단순 내림만 적용하면 부동소수점 오차가 그대로 노출됨을 실측으로 확인(AVAX 매도가 `6.69119999`, ADA 손절가 `0.17590999`, ACE 매도가 `0.20216399`) — 곱셈으로 만들어진 파생값이기 때문. 자르기 전 유효숫자 10자리로 정리한 뒤 `ROUND_FLOOR`로 8자리 내림하도록 구현. 저장된 추천 20건 x 3값 = 60개 전수 확인 결과 지수 표기·8자리 초과 0건, 부동소수점 잡음 0건. 호가 단위(tickSize) 반올림은 채택하지 않아 목표·손절가가 30종 중 22종에서 종목 호가보다 1~2자리 긴 제약은 남음을 문서화. 테스트 268건 통과.
+**Context**: Construction / Code Generation — 가격 표기 규칙 개정
+
+---
