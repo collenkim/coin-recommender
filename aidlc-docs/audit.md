@@ -1961,3 +1961,11 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Construction / Code Generation — 알림 가격 표기 결함 수정
 
 ---
+
+## Verification — BR42 저장 데이터 영향 범위 확인
+**Timestamp**: 2026-08-20T03:30:00Z
+**User Input**: "Using AI-DLC 잘못 표기된 추천 데이터 수치는 수정된거야?? DB에서?"
+**AI Response**: DB 수정 불필요함을 실측으로 확인. (1) `recommendations` 테이블에 매도가·손절가 컬럼이 없음 — 진입가에서 파생해 표시 시점에 계산하므로 저장된 잘못된 값이 애초에 없음. (2) 저장된 추천 20건의 `entry_price`를 실제 4시간봉 종가와 전수 대조한 결과 불일치 0건. (3) 감시 판정(`_events_for`)은 `rec.entry_price * (1 ± ratio)`를 float 원값으로 비교하므로 표기 반올림과 무관 — 과거 도달/손절 판정도 영향 없음. BR42는 순수 표시 계층 결함이며 데이터 오염이 아니었음(BR36/BR37과 다른 성격).
+**Context**: Verification — 데이터 무결성 확인
+
+---
