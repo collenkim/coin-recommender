@@ -1,4 +1,5 @@
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -24,6 +25,24 @@ def _kst(moment: datetime, fmt: str = "%m-%d %H:%M") -> str:
     return moment.astimezone(_KST).strftime(fmt)
 
 
+def _price(value: float | None) -> str:
+    """BR42: 가격 표기.
+
+    `%g`는 값이 작아지면 **지수 표기로 넘어간다** -- 실제로 PEPE 매도가가 `3.157e-06`으로
+    발송됐다. 그렇다고 소수 자릿수를 고정할 수도 없다: 6자리로 반올림하면 PEPE 진입가
+    0.00000287과 매도가 0.00000316이 **둘 다 `0.000003`**이 되어 구분 자체가 사라진다.
+
+    그래서 **유효숫자 5자리**를 소수 표기로 풀고 꼬리 0을 뗀다(최소 2자리, 최대 8자리).
+    진입가는 거래소가 준 값 그대로이므로 이 규칙이 바이낸스 호가 단위를 그대로 복원한다."""
+    if value is None:
+        return "-"
+    if value <= 0:
+        return f"{value:,.2f}"
+    decimals = min(8, max(2, 5 - int(math.floor(math.log10(value))) - 1))
+    whole, _, frac = f"{value:,.{decimals}f}".partition(".")
+    return f"{whole}.{frac.rstrip('0').ljust(2, '0')}"
+
+
 def _track_rules(r):
     """BR25: 트랙마다 목표·손절·보유기간이 다르다. 하나의 상수를 공유하면 장기 추천이 단기
     기준으로 잘못 표기된다."""
@@ -44,9 +63,9 @@ def _entry_guide_lines(r) -> list[str]:
     deadline = entry_time + timedelta(hours=hold_hours)
     horizon = f"진입 +{hold_hours // 24}일" if hold_hours >= 48 else f"진입 +{hold_hours}시간"
     return [
-        f"· 진입가: {entry_price:,.6g}  ({_kst(entry_time)} KST 봉 마감 기준)",
-        f"· 매도가: {entry_price * (1 + target):,.6g}  (+{target:.0%})",
-        f"· 손절가: {entry_price * (1 - stop):,.6g}  (-{stop:.0%}, 아래 확률의 전제)",
+        f"· 진입가: {_price(entry_price)}  ({_kst(entry_time)} KST 봉 마감 기준)",
+        f"· 매도가: {_price(entry_price * (1 + target))}  (+{target:.0%})",
+        f"· 손절가: {_price(entry_price * (1 - stop))}  (-{stop:.0%}, 아래 확률의 전제)",
         f"· 청산 기한: {_kst(deadline)} KST  ({horizon})",
     ]
 
@@ -118,7 +137,7 @@ def _format_price_alert(now: datetime, events: list) -> str:
             "\n".join(
                 [
                     f"({order}) {market} · {labels}{title}",
-                    f"· {price_label}: {price:,.6g}  ({_event_note(kind, tracks[0])})",
+                    f"· {price_label}: {_price(price)}  ({_event_note(kind, tracks[0])})",
                     f"· 도달 시각: {_kst(at)} KST",
                 ]
             )
@@ -188,7 +207,7 @@ def _premium_lines(premium) -> list[str]:
         return []
     return [
         f"[시장 이벤트] BTC 역프 {premium.value:.2%} (기준 {REVERSE_PREMIUM_THRESHOLD:.0%} 이하)",
-        f"· 업비트 {premium.upbit_krw:,.0f}원 / 바이낸스 {premium.binance_usdt:,.6g} USDT"
+        f"· 업비트 {premium.upbit_krw:,.0f}원 / 바이낸스 {_price(premium.binance_usdt)} USDT"
         f" (환율 {premium.usd_krw:,.2f})",
         f"· {MEASURED_NOTE}",
     ]

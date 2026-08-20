@@ -1952,3 +1952,12 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Construction / Code Generation — 수집 완결성 결함 수정
 
 ---
+
+## Construction — Code Generation (BR42 가격 표기)
+**Timestamp**: 2026-08-20T03:00:00Z
+**User Input**: "Using AI-DLC 지금 진입가 매도가 손절가 전부 숫자가 꺠져서 나오는데. 최대 자리수 때문인거같은데. 소수점 5-6자리로 반올림 하는게 맞을꺼같은데 바이낸스 가격도 그렇게 노출될껄?"
+**User Input (추가)**: "Using AI-DLC 니가 추천알림 데이터 저장한거기준으로 확인해보면 되잖아. 매도가 3.157e-06 이렇게 되어있던데"
+**AI Response**: 저장된 추천 데이터로 재현 확인 — `f"{v:,.6g}"`의 `%g`가 작은 값에서 지수 표기로 전환(PEPE 매도가 `3.157e-06`, 사용자 신고와 일치)되고 큰 값에서는 소수점을 잘라냄(BTC `118,432`). 제안하신 소수점 5~6자리 고정은 채택하지 않음 — 6자리 반올림 시 PEPE 진입가(0.00000287)와 매도가(0.00000316)가 둘 다 `0.000003`이 되어 구분이 사라짐을 실측으로 확인. 대신 유효숫자 5자리를 소수 표기로 풀고 꼬리 0 제거(최소 2·최대 8자리)하는 규칙 적용. 저장된 추천 20건 전수 검증 결과 지수 표기 0건, 진입가 전부 바이낸스 tickSize와 일치(불일치 0건). 테스트 267건 통과.
+**Context**: Construction / Code Generation — 알림 가격 표기 결함 수정
+
+---

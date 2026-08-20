@@ -432,8 +432,8 @@ def test_each_track_shows_its_own_stop_percentage():
         send_price_alert(events, RUN_TIME, None, None, "https://discord.example/webhook")
 
     message = mock_post.call_args.kwargs["json"]["content"]
-    assert "0.194236  (-2%)" in message
-    assert "0.190272  (-4%)" in message
+    assert "0.19424  (-2%)" in message
+    assert "0.19027  (-4%)" in message
 
 
 def test_each_track_shows_its_own_target_percentage():
@@ -446,7 +446,7 @@ def test_each_track_shows_its_own_target_percentage():
 
     message = mock_post.call_args.kwargs["json"]["content"]
     assert "78.54  (+2%)" in message
-    assert "84.7  (+10%)" in message
+    assert "84.70  (+10%)" in message
 
 
 def test_legacy_track_falls_back_to_the_regime_rules():
@@ -457,3 +457,36 @@ def test_legacy_track_falls_back_to_the_regime_rules():
         send_price_alert([_evt("OLDUSDT", STOP_HIT, 98.0, "regime")], RUN_TIME, None, None, "https://d.example/w")
 
     assert "(-2%)" in mock_post.call_args.kwargs["json"]["content"]  # 기존 트랙 STOP_LOSS
+
+
+# --- 가격 표기 (BR42) ---
+
+def test_small_prices_never_go_to_exponent_notation():
+    """실제 발송 사고: PEPE 매도가가 `3.157e-06`으로 나갔다."""
+    from src.notifier import _price
+
+    assert _price(3.157e-06) == "0.00000316"
+    assert "e-" not in _price(2.87e-06)
+
+
+def test_entry_target_and_stop_stay_distinguishable_for_sub_cent_coins():
+    """소수 6자리 고정으로 반올림하면 PEPE의 세 값이 전부 `0.000003`이 되어 구분이 사라진다."""
+    from src.notifier import _price
+
+    entry = 2.87e-06
+    shown = {_price(entry), _price(entry * 1.02), _price(entry * 1.10)}
+    assert len(shown) == 3
+
+
+def test_large_prices_keep_their_decimals():
+    """`%g`는 유효숫자 6자리에서 잘라 118,432.15를 `118,432`로 만든다 -- 소수점이 통째로 사라진다."""
+    from src.notifier import _price
+
+    assert _price(118432.15) == "118,432.15"
+
+
+def test_price_keeps_at_least_two_decimals_and_drops_padding_zeros():
+    from src.notifier import _price
+
+    assert _price(6.56) == "6.56"  # 6.5600이 아니다
+    assert _price(205.0) == "205.00"  # 정수로 끝나지 않는다
