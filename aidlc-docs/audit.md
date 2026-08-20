@@ -1985,3 +1985,11 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Construction / Code Generation — 가격 표기 규칙 개정
 
 ---
+
+## Construction — Code Generation (BR43 probe 제거)
+**Timestamp**: 2026-08-20T05:00:00Z
+**User Input**: "Using AI-DLC 캐시가 그리고 의미가 있나? 조회된 데이터는 DB에 저장될텐데."
+**AI Response**: 실측 대조 결과 `collection_state.exchange_earliest`와 `MIN(candle_time)`이 321쌍 전부 동일함을 확인. 다만 캐시가 담는 것은 값이 아니라 "더 받을 과거가 없음을 확인했다"는 사실이며, DB의 MIN은 '우리가 가진 것'이고 필요한 판단은 '거래소에 더 있는가'라 서로 다름(BR41 결함이 정확히 그 차이에서 발생)을 설명. 지적하신 중복은 실재함을 확인 — 백필 응답의 첫 봉이 target_start보다 뒤면 거래소에 그 이전이 없다는 증명인데, 다음 실행에서 probe로 같은 것을 다시 조회하고 있었음. 백필 결과에서 바로 기록하도록 수정(BR43). 신규 종목당 7요청 절감 및 probe 실패 시 전량 재백필 경로 제거. 회귀 테스트 2건 추가, 테스트 270건 통과.
+**Context**: Construction / Code Generation — 중복 조회 제거
+
+---

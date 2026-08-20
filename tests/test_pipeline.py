@@ -31,9 +31,12 @@ def _patched_pipeline(**overrides):
     mock_store.get_last_candle_time.return_value = None  # BR29: 이력 없음 -> 수집 필요
     mock_binance_selector_instance = MagicMock()
     mock_binance_selector_instance.get_candidate_markets.return_value = defaults["binance_selector_markets"]
+    # 실제 캔들 리스트를 돌려줘야 한다 -- MagicMock을 시각으로 비교하는 코드가 있다.
+    mock_binance_client = MagicMock()
+    mock_binance_client.get_klines_since.return_value = []
 
     patches = [
-        patch("src.pipeline.BinanceClient"),
+        patch("src.pipeline.BinanceClient", return_value=mock_binance_client),
         patch("src.pipeline.check_market_regime", return_value=defaults["regime"]),
         patch("src.pipeline.generate_recommendations", return_value=defaults["recommendations"]),
         patch("src.pipeline.send_notification"),
@@ -142,6 +145,7 @@ def test_binance_candidate_collection_stores_both_timeframes():
     mock_store.get_first_candle_time.return_value = None
     mock_store.get_last_candle_time.return_value = None
     mock_binance = MagicMock()
+    mock_binance.get_klines_since.return_value = []
 
     from src.pipeline import _collect_and_store_binance
 
@@ -506,3 +510,44 @@ def test_scheduler_runs_every_30_minutes():
         assert str(minute) == "5,35"
     finally:
         stop_scheduler(app)
+
+
+def test_backfill_records_the_exchange_earliest_without_a_separate_probe(tmp_path):
+    """BR43: `target_start`부터 전부 훑었는데 첫 봉이 그보다 뒤면 거래소에 그 이전이 없다는 뜻이다.
+    백필 결과가 이미 답을 담고 있으므로 다음 실행이 probe를 또 쏠 이유가 없다."""
+    from src.data_store import Candle, DataStore
+    from src.pipeline import _collect_and_store_binance
+
+    store = DataStore(str(tmp_path / "p.db"))
+    listed_at = datetime(2020, 8, 11, tzinfo=timezone.utc)
+    mock_binance = MagicMock()
+    mock_binance.get_klines_since.return_value = [
+        Candle("SOLUSDT", "1h", listed_at, 1.0, 1.0, 1.0, 1.0, 1.0)
+    ]
+
+    _collect_and_store_binance(store, mock_binance, "SOLUSDT", timeframes=("1h",))
+
+    assert store.get_exchange_earliest("binance", "SOLUSDT", "1h") == listed_at
+    mock_binance.get_klines.assert_not_called()  # probe 없이 백필 결과만으로 확정
+
+
+def test_second_run_after_a_backfill_costs_no_request_at_all(tmp_path):
+    """위 기록 덕분에 두 번째 실행은 깊이 확인용 probe도, 증분 조회도 하지 않는다."""
+    from src.data_store import Candle, DataStore
+    from src.pipeline import _collect_and_store_binance
+
+    store = DataStore(str(tmp_path / "p2.db"))
+    listed_at = datetime(2020, 8, 11, tzinfo=timezone.utc)
+    recent = datetime.now(timezone.utc) - timedelta(minutes=10)
+    mock_binance = MagicMock()
+    mock_binance.get_klines_since.return_value = [
+        Candle("SOLUSDT", "1h", listed_at, 1.0, 1.0, 1.0, 1.0, 1.0),
+        Candle("SOLUSDT", "1h", recent, 1.0, 1.0, 1.0, 1.0, 1.0),
+    ]
+
+    _collect_and_store_binance(store, mock_binance, "SOLUSDT", timeframes=("1h",))
+    mock_binance.reset_mock()
+    _collect_and_store_binance(store, mock_binance, "SOLUSDT", timeframes=("1h",))
+
+    mock_binance.get_klines.assert_not_called()
+    mock_binance.get_klines_since.assert_not_called()

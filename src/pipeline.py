@@ -144,6 +144,13 @@ def _collect_and_store_binance(
                 continue
             if backfill:
                 candles = binance_client.get_klines_since(symbol, timeframe, target_start)
+                # BR43: `target_start`부터 전부 훑었는데 첫 봉이 그보다 뒤라면, 거래소에 그 이전이
+                # **없다는 뜻**이다 -- 별도 probe로 다시 물어볼 이유가 없다. 백필 결과에서 바로
+                # 기록해 다음 실행의 요청 1회를 없앤다.
+                if candles and candles[0].candle_time > target_start:
+                    data_store.set_exchange_earliest(
+                        SOURCE, symbol, timeframe, candles[0].candle_time, datetime.now(timezone.utc)
+                    )
             else:
                 # BR30: 증분도 페이지네이션한다. `get_klines`는 1회 1,000봉이 상한이라 15분봉이면
                 # 10일치뿐이다 -- 오래 뒤처진 타임프레임은 따라잡는 데 수백 회가 걸리고, 그동안
