@@ -232,6 +232,45 @@ def test_binance_collection_uses_incremental_once_history_is_deep_enough():
     assert mock_binance.get_klines_since.call_args.args[2] == mock_store.get_last_candle_time.return_value
 
 
+def test_shallow_history_is_backfilled_even_when_the_latest_bar_is_current():
+    """BR41: `_is_up_to_date`는 **마지막 봉만** 본다. 최신봉만 있으면 그대로 건너뛰므로 앞이 얕은
+    종목은 영원히 깊어지지 않는다 -- lookback을 늘린 직후가 정확히 이 상태다(꼬리는 최신, 머리는 얕음).
+
+    "최신봉이 있으니 완료"는 "최초봉이 있으니 완료"와 같은 계열의 오판이다."""
+    mock_store = MagicMock()
+    stored_first = datetime.now(timezone.utc) - timedelta(days=365)
+    mock_store.get_first_candle_time.return_value = stored_first
+    mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(minutes=10)
+    # 거래소는 2017년부터 갖고 있다 -- 아직 8년어치를 더 받을 수 있다.
+    mock_store.get_exchange_earliest.return_value = datetime(2017, 11, 6, tzinfo=timezone.utc)
+    mock_binance = MagicMock()
+
+    from src.pipeline import _collect_and_store_binance
+
+    _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h",))
+
+    mock_binance.get_klines_since.assert_called_once()
+    # 증분(마지막 봉부터)이면 앞의 구멍이 그대로 남는다 -- 백필이어야 한다.
+    assert mock_binance.get_klines_since.call_args.args[2] < stored_first
+
+
+def test_fresh_and_deep_history_is_still_skipped_without_any_request():
+    """BR29는 유지된다 -- 깊이까지 채워진 종목은 새 봉이 마감되기 전까지 조회하지 않는다."""
+    mock_store = MagicMock()
+    stored_first = datetime(2017, 11, 6, tzinfo=timezone.utc)
+    mock_store.get_first_candle_time.return_value = stored_first
+    mock_store.get_last_candle_time.return_value = datetime.now(timezone.utc) - timedelta(minutes=10)
+    mock_store.get_exchange_earliest.return_value = stored_first
+    mock_binance = MagicMock()
+
+    from src.pipeline import _collect_and_store_binance
+
+    _collect_and_store_binance(mock_store, mock_binance, "SOLUSDT", timeframes=("1h",))
+
+    mock_binance.get_klines_since.assert_not_called()
+    mock_binance.get_klines.assert_not_called()
+
+
 # --- evaluate_pending_outcomes (BR9) ---
 
 def _store_with(tmp_path, track, target_hit=None, stop_hit=None, entry_time=None):
@@ -350,10 +389,10 @@ def test_collection_is_skipped_when_no_new_bar_has_closed_yet(tmp_path):
 
     store = DataStore(str(tmp_path / "f.db"))
     just_closed = datetime.now(timezone.utc) - timedelta(hours=1)
-    store.upsert_candles(
-        "binance", "SOLUSDT", "1w",
-        [Candle("SOLUSDT", "1w", just_closed - timedelta(days=7), 1, 1, 1, 1, 1.0)],
-    )
+    first = just_closed - timedelta(days=7)
+    store.upsert_candles("binance", "SOLUSDT", "1w", [Candle("SOLUSDT", "1w", first, 1, 1, 1, 1, 1.0)])
+    # BR41: 건너뛰려면 깊이도 다 차 있어야 한다. 보유 최초봉이 거래소 최초봉임을 캐시로 알린다.
+    store.set_exchange_earliest("binance", "SOLUSDT", "1w", first, datetime.now(timezone.utc))
     mock_binance = MagicMock()
 
     _collect_and_store_binance(store, mock_binance, "SOLUSDT", timeframes=("1w",))

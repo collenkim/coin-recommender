@@ -1936,3 +1936,19 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Construction / Code Generation — 정합성 점검 및 백테스트 로직 문서화
 
 ---
+
+## Requirements Analysis — 예비 종목 일배치 예열 검토
+**Timestamp**: 2026-08-20T01:00:00Z
+**User Input**: "Using AI-DLC 일배치로 상위 30개를 제외한 나머지 30개씩 이력을 추가로 저장하게 하면 더 나을까?"
+**AI Response**: 실측 후 **권하지 않음**으로 회신. (1) 후보 풀이 `top_n_candidates=30`으로 고정이라 31~60위 이력을 저장해도 추천 대상이 되지 않음. (2) 파이프라인이 수집→채점 순서라 신규 편입 종목도 같은 회차에 전체 이력을 받고 바로 채점됨 — 예열이 아끼는 것은 그 회차 지연 2~3분뿐. (3) `_MAX_SCAN=60`이 이미 31~60위를 훑고 있어 현재 상위 30 중 6종(LTC 31위·ENA 34·AAVE 35·MUBARAK 36·XLM 37·TUT 38)이 31위 아래에서 올라와 있으며, DB는 이미 이탈 종목 포함 69종 보유. 예열 실대상은 10종/2,366요청/299MB. 대신 점검 중 **부분 수집 방어 부재**를 발견해 그쪽을 우선 제안.
+**Context**: Inception / Requirements Analysis — 설계 질의에 대한 실측 기반 회신
+
+---
+
+## Construction — Code Generation (BR41 얕은 이력 영구 잔존 수정)
+**Timestamp**: 2026-08-20T02:00:00Z
+**User Input**: "Using AI-DLC 사용이력이 더 많이 있는데 조금만 수집된게 있다면 이 부분은 수정되어야해. 최대 수집 데이터가 될 수 잇도록"
+**AI Response**: 원인 특정 — `_collect_and_store_binance`가 신선도(`_is_up_to_date`)를 먼저 검사하고 참이면 즉시 continue해 깊이 판정에 도달하지 못했음. 꼬리만 최신이고 머리가 얕은 상태(= lookback 확대 직후)가 영구히 남는 구조. `_needs_backfill`을 분리해 깊이 판정을 앞에 두고, 신선도+깊이가 모두 충족될 때만 건너뛰도록 수정. `get_klines_since`의 `_MAX_PAGES` 조용한 절단에 경고 로그 추가. 재현 테스트 2건 추가(수정 전 실패 확인), 실환경 검증에서 XRPUSDT 4시간봉 2,189봉 -> 18,169봉 완전 복구. 정상 상태 비용 0요청/0.6초로 회귀 없음. 현재 상위 30종 210조합 전수 점검 결과 얕은 조합 0건. 테스트 263건 통과.
+**Context**: Construction / Code Generation — 수집 완결성 결함 수정
+
+---

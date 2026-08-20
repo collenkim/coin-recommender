@@ -77,6 +77,26 @@ def _is_exchange_earliest(
     return earliest[0].candle_time >= first_time
 
 
+def _needs_backfill(
+    data_store: DataStore,
+    binance_client: BinanceClient,
+    symbol: str,
+    timeframe: str,
+    target_start: datetime,
+) -> bool:
+    """아직 받을 수 있는 과거가 남았는가 (= 보유 이력의 **머리**가 얕은가).
+
+    BR41: 이 판단이 `_is_up_to_date`(꼬리가 최신인가)보다 먼저 와야 한다. 순서가 반대면 꼬리만
+    최신인 종목이 영원히 얕은 채로 남는다 -- lookback을 늘린 직후가 정확히 그 상태다."""
+    first_time = data_store.get_first_candle_time(SOURCE, symbol, timeframe)
+    if first_time is None:
+        return True
+    if first_time <= target_start:
+        return False
+    # target_start까지 못 미쳐도 그것이 거래소의 첫 봉이면 더 받을 과거가 없다(상장 전).
+    return not _is_exchange_earliest(data_store, binance_client, symbol, timeframe, first_time)
+
+
 def _is_up_to_date(data_store: DataStore, symbol: str, timeframe: str) -> bool:
     """BR29: 마지막 저장 봉 다음 봉이 아직 마감되지 않았으면 True (조회 불필요).
 
@@ -113,19 +133,16 @@ def _collect_and_store_binance(
     """
     target_start = datetime.now(timezone.utc) - timedelta(days=lookback_days or settings.backtest_lookback_days)
     for timeframe in timeframes:
-        # BR29: 아직 새 봉이 마감되지 않았으면 조회 자체를 건너뛴다. 주봉은 주 1회, 월봉은 월 1회만
-        # 새 봉이 생기는데 매시간 물어보고 있었다 -- 30종 x 7봉이면 시간당 210요청 중 상당수가
-        # "변화 없음"을 확인하는 데만 쓰였다.
-        if _is_up_to_date(data_store, symbol, timeframe):
-            continue
         try:
-            first_time = data_store.get_first_candle_time(SOURCE, symbol, timeframe)
-            if first_time is not None and first_time > target_start and _is_exchange_earliest(
-                data_store, binance_client, symbol, timeframe, first_time
-            ):
-                # 거래소의 첫 봉을 이미 보유 -- target_start까지 못 미쳐도 그건 상장 전이라 없는 것이다.
-                first_time = target_start
-            if first_time is None or first_time > target_start:
+            backfill = _needs_backfill(data_store, binance_client, symbol, timeframe, target_start)
+            # BR29: 아직 새 봉이 마감되지 않았으면 조회 자체를 건너뛴다. 주봉은 주 1회, 월봉은 월 1회만
+            # 새 봉이 생기는데 매시간 물어보고 있었다 -- 30종 x 7봉이면 시간당 210요청 중 상당수가
+            # "변화 없음"을 확인하는 데만 쓰였다.
+            # BR41: 단, **깊이가 다 찼을 때만** 건너뛴다. 꼬리만 보고 건너뛰면 머리가 얕은 종목이
+            # 영원히 그대로 남는다.
+            if not backfill and _is_up_to_date(data_store, symbol, timeframe):
+                continue
+            if backfill:
                 candles = binance_client.get_klines_since(symbol, timeframe, target_start)
             else:
                 # BR30: 증분도 페이지네이션한다. `get_klines`는 1회 1,000봉이 상한이라 15분봉이면

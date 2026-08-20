@@ -1,3 +1,4 @@
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Callable, TypeVar
@@ -5,6 +6,8 @@ from typing import Callable, TypeVar
 import requests
 
 from src.data_store import Candle, TickerInfo, drop_unclosed
+
+logger = logging.getLogger(__name__)
 
 _BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 _BINANCE_TICKER_24HR_URL = "https://api.binance.com/api/v3/ticker/24hr"
@@ -103,6 +106,14 @@ class BinanceClient:
             if len(raw) < _MAX_LIMIT:
                 break  # short page -- the exchange has nothing more
             cursor = collected[-1].candle_time
+        else:
+            # BR41: 상한에 걸려 끊긴 것을 조용히 넘기면 "받을 만큼 받았다"로 보인다. 다음 실행이
+            # 이어받아 메우지만(꼬리가 뒤처지므로 증분이 돈다), 몇 회차 동안 얕은 이력으로 확률을
+            # 계산하게 되므로 드러나야 한다.
+            logger.warning(
+                "get_klines_since hit the %d-page guard for %s %s (%d bars from %s) -- history is truncated this run",
+                max_requests, symbol, interval, len(collected), start_time,
+            )
         return collected
 
     def get_tickers_by_volume(self) -> list[TickerInfo]:
