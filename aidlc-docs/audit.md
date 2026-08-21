@@ -1993,3 +1993,19 @@ Tests: 4 existing API tests failed after the change because their fixtures used 
 **Context**: Construction / Code Generation — 중복 조회 제거
 
 ---
+
+## Requirements Analysis — 주식용 무료 Open API 조사
+**Timestamp**: 2026-08-20T05:30:00Z
+**User Input**: "Using AI-DLC 주식 추천에 사용할 open api가 있나? 바이낸스처럼 무료로 제공되는곳"
+**AI Response**: 조사 결과 회신. 무료 API는 존재하나 이 프로젝트 방법론의 전제인 **분봉 이력 깊이**를 만족하는 곳은 사실상 Alpaca(미국주식, IEX 피드, 분봉 5년, 200콜/분) 뿐임. yfinance는 분봉 60일(1분봉 7일) 한계, Alpha Vantage 무료 25콜/일, Finnhub는 과거 캔들이 유료로 이동. 한국주식은 한국투자증권 KIS Open API가 무료이나 **분봉이 당일만 조회 가능하고 1회 30건**이라 과거 분봉 백테스트가 원천 불가(일봉은 가능). 구조적 제약도 보고 — 정규장 6.5시간이라 4시간봉이 연 504개로 크립토(2,190개)의 23%, Alpaca 5년 한계로는 종목당 진입 표본이 약 25건 추정(현 단타 트랙 XRP 183건 대비). 결론: 현 분봉 기반 트랙 구조를 그대로 이식할 수 없고 일봉 기반 재설계가 필요함을 안내.
+**Context**: Inception / Requirements Analysis — 신규 도메인(주식) 데이터 소스 타당성 조사
+
+---
+
+## Requirements Analysis — 국내 과거 데이터 API 재조사 (앞선 답변 정정)
+**Timestamp**: 2026-08-20T06:00:00Z
+**User Input**: "과거데이터도 조회하고 싶은데 그러면 사용가능한 api가 국내에 존재하지 않아?"
+**AI Response**: 앞선 답변("KIS 분봉은 당일만 조회 가능") 정정. KIS 공식 샘플 코드로 확인한 결과 **과거일자 분봉 전용 엔드포인트가 별도로 존재**함 — `inquire-time-dailychartprice`(주식일별분봉조회, 국내주식-213): 1회 120건, `FID_INPUT_DATE_1`/`FID_INPUT_HOUR_1`로 과거일자 조회 가능, **서버 보관 한도 최대 1년**. 앞서 인용한 "당일만"은 `inquire-time-itemchartprice`(주식당일분봉조회, 1회 30건)의 제약이었음. 일봉은 `inquire-daily-itemchartprice`(1회 100건, 날짜 지정, 수정주가 옵션)로 장기 확보 가능하며 FinanceDataReader/pykrx로 1995년부터 무료. 일봉 기반 트랙 타당성을 크립토 일봉으로 대리 측정한 결과 교차 1건당 일봉 40개 -> 국내주식 10년이면 종목당 표본 약 61건으로 하한 10건을 충분히 상회함을 확인. 결론: 국내에도 과거 데이터는 충분하며, 분봉 기반이 아닌 일봉 기반 재설계가 필요.
+**Context**: Inception / Requirements Analysis — 앞선 조사 결과 정정 및 보완
+
+---

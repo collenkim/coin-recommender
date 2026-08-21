@@ -1,0 +1,31 @@
+# 네이버 클라우드 인스턴스(49.50.134.225) 배포용.
+# 로컬 docker-compose.yml과 다른 점만 여기 둔다.
+#   - 포트 8000은 portainer-dev가 127.0.0.1:8000으로 점유 중이라 20080으로 옮긴다.
+#   - 볼륨은 반드시 로컬 디스크(/dev/vda2)에 둔다. /mnt/naver-nas는 NFSv3(local_lock=none)라
+#     SQLite WAL의 -shm 공유메모리 mmap이 불가능해 상시 "disk I/O error"가 난다.
+#   - mem_limit: 이 서버는 스왑이 0이고 다른 서비스 13개가 함께 돈다. 우리가 폭주했을 때
+#     OOM killer가 이웃 컨테이너를 죽이는 것을 막는 것이 목적이다(서버 실측 피크 496MiB의 4배. 개발 표준인 2GB 상한에 맞춘다).
+services:
+  api:
+    build: .
+    container_name: coin-recommend
+    ports:
+      - "20080:8000"
+    env_file:
+      - .env
+    volumes:
+      - /opt/coin-recommend/data:/app/data
+    mem_limit: 2g
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
